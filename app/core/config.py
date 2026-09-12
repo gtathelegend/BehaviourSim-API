@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     WEB_BASE_URL: str = "http://localhost:3000"
 
     # Database configuration (Phase 1+)
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/behaviorsim_dev"
+    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5432/behaviorsim_dev"
+
+    # Authentication & API Key configuration
+    API_KEY_PREFIX: str = "bs_live_"
 
     # CORS configuration
     CORS_ORIGINS: Union[List[str], str] = [
@@ -36,6 +39,14 @@ class Settings(BaseSettings):
 
     # Logging
     LOG_LEVEL: str = "INFO"
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        """Normalize database URL for SQLAlchemy 2 with psycopg3 if postgresql:// is provided."""
+        if isinstance(value, str) and value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+psycopg://", 1)
+        return value
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

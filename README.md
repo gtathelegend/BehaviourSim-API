@@ -53,11 +53,12 @@ cp .env.example .env
 | `API_VERSION` | `0.1.0` | Semantic version of the API |
 | `API_BASE_URL` | `http://localhost:8000` | Base URL where the API is hosted |
 | `WEB_BASE_URL` | `http://localhost:3000` | Base URL of the frontend web application |
-| `DATABASE_URL` | `postgresql://...` | Connection URI for the database (used in Phase 1+) |
+| `DATABASE_URL` | `postgresql+psycopg://...` | Connection URI for the database (PostgreSQL with psycopg3 driver) |
+| `API_KEY_PREFIX` | `bs_live_` | Standard prefix for developer API keys |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8000` | Comma-separated list of allowed CORS origins |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
-No external secrets or cloud credentials are required for Phase 0.
+No external cloud secrets or third-party credentials are required for local development and testing.
 
 ## 5. Running the API Locally
 
@@ -85,7 +86,7 @@ To run with verbose output:
 pytest -v
 ```
 
-All Phase 0 tests run locally and self-contained without requiring database or cloud dependencies.
+All tests execute self-contained against an isolated in-memory test database and do not require external PostgreSQL or cloud infrastructure.
 
 ## 7. Health Check Endpoint
 
@@ -104,23 +105,69 @@ GET /health
 }
 ```
 
-## 8. What is Implemented in Phase 0
+The health check does not require authentication or an active database connection.
 
-* **Application Foundation**: FastAPI application factory with lifespan-based lifecycle management.
-* **Dependency Verification**: Startup check ensuring `behaviorsim==1.0.1` is available without executing compute during initialization.
-* **Centralized Configuration**: Typed `pydantic-settings` schema with environment variable parsing and origin validation.
-* **Infrastructure Health Endpoint**: Fast, lightweight `/health` probe.
-* **API Versioning Base**: Router layout prepared for `/v1/...` routes.
-* **Structured Logging**: Standardized application logging omitting sensitive headers and credentials.
-* **Safe Error Handling Foundation**: Base domain exception definitions and error registration handlers.
-* **Restricted CORS**: Origin-filtered CORS middleware preventing unsafe wildcard access.
-* **Self-Contained Test Suite**: Health, dependency, and settings validation passing with zero external dependencies.
+## 8. Database Architecture & Migrations (Phase 1–2)
 
-## 9. Intentionally Not Implemented in Phase 0
+The persistence layer uses **SQLAlchemy 2.0** declarative models with asynchronous/synchronous support via Psycopg 3, managed by **Alembic** migrations.
+
+### Schema Models
+
+1. **`users`**:
+   - `id`: UUID (v4) primary key.
+   - `email`: Unique indexed user email.
+   - `display_name`: Optional user display name.
+   - `is_active`: Status flag for account authorization.
+   - `created_at`, `updated_at`: UTC timestamps.
+
+2. **`auth_identities`**:
+   - Represents external authentication providers (`google`, `github`).
+   - Compound unique constraint on `(provider, provider_subject)`.
+   - Explicit foreign key relationship to `users` (`ondelete="CASCADE"`).
+   - No access tokens or refresh tokens are persisted.
+
+3. **`api_keys`**:
+   - `id`: UUID primary key.
+   - `user_id`: Foreign key to owning user (`ondelete="CASCADE"`).
+   - `name`: Human-readable identifier (e.g., "Production Backend").
+   - `key_prefix`: Short 16-character public prefix (`bs_live_xxxxxxxx`) for fast indexed lookup and audit logging.
+   - `key_hash`: SHA-256 cryptographic digest of the raw secret.
+   - `is_active`, `created_at`, `last_used_at`, `revoked_at`: Key lifecycle tracking.
+
+### Database Migrations
+
+Run database migrations to latest revision:
+
+```bash
+alembic upgrade head
+```
+
+Roll back migrations:
+
+```bash
+alembic downgrade base
+```
+
+## 9. API-Key Security Model
+
+* **High-Entropy Generation**: Generated using `secrets.token_urlsafe(32)` providing 256 bits of cryptographic entropy.
+* **Format**: `bs_live_<secret>`.
+* **Raw-Key-Once Guarantee**: Raw keys are returned exclusively at generation time and are never stored in plaintext, logged, or returned in subsequent list/read operations.
+* **Cryptographic Hashing**: API keys are hashed with SHA-256. Because 256-bit random keys have maximal entropy ($2^{256}$ keyspace), they are immune to dictionary/brute-force attacks, avoiding CPU-blocking KDF latency (e.g. bcrypt/argon2) on API hot paths.
+* **Timing-Attack Resistance**: Key verification is performed via `hmac.compare_digest`.
+* **Soft Revocation**: Revoking a key marks `is_active = False` and populates `revoked_at` without deleting audit history.
+
+## 10. What is Implemented
+
+* **Phase 0 Foundation**: FastAPI application factory, logging, settings, `/health` endpoint, `behaviorsim==1.0.1` startup check.
+* **Phase 1 Database Foundation**: SQLAlchemy 2.0 declarative models (`Base`), lazy engine creation, request-scoped sessions (`get_db`), and Alembic migrations (`0001_initial_auth_tables`).
+* **Phase 2 Authentication Foundation**: External auth identity schemas (`google`, `github`), developer API-key generation/hashing/verification, API-key lifecycle service (`create`, `list`, `revoke`, `validate`), and `AuthenticatedPrincipal` dependency.
+
+## 11. Intentionally Not Implemented in Phase 1–2
 
 The following capabilities are reserved for subsequent phases:
-* Database persistence (SQLAlchemy, Alembic migrations)
-* Authentication and authorization (OAuth, API keys, JWTs)
-* Simulation execution and parameter validation endpoints (`/v1/simulations`)
-* Background task queues (Celery, Redis)
+* Google / GitHub OAuth callback flows and token exchange
 * Rate limiting and quota management
+* Simulation execution and parameter validation endpoints (`/v1/simulations`)
+* Usage accounting and billing integration
+* Background task workers (Celery, Redis)

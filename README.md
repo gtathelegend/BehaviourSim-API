@@ -234,6 +234,14 @@ Requires authentication (via cookie, Bearer session token, or developer API key)
 }
 ```
 
+### API Key Management Endpoints
+
+Developer API keys can be managed programmatically or via authenticated dashboard sessions:
+
+* **List API Keys (`GET /v1/api-keys`)**: Returns metadata for all API keys owned by the user (raw secrets are omitted).
+* **Create API Key (`POST /v1/api-keys`)**: Creates a key with a descriptive name, returns the raw secret `key` **exactly once**, and enforces the user's plan `max_api_keys` quota.
+* **Revoke API Key (`DELETE /v1/api-keys/{key_id}`)**: Soft-revokes an active API key owned by the user, immediately invalidating future requests.
+
 ## 10. Quotas, Rate Limiting & Usage Accounting
 
 Phase 4 establishes the usage-control and boundary layer protecting backend simulation compute:
@@ -247,7 +255,7 @@ Each user is assigned a plan (defaults to `free` plan):
 * **Single-Request Limit**: 1,000 interactions / request
 * **Rate Limit**: 5 requests / minute
 * **Max Concurrent Simulations**: 1
-* **Max Developer API Keys**: 5 active keys
+* **Max Developer API Keys**: 1 active key
 
 ### Usage Accounting Architecture
 
@@ -285,7 +293,7 @@ Requires authentication (cookie, session token, or API key) and enforces rate li
     "max_interactions_per_request": 1000,
     "requests_per_minute": 5,
     "max_concurrent_simulations": 1,
-    "max_api_keys": 5
+    "max_api_keys": 1
   },
   "usage": {
     "requests": 12,
@@ -446,10 +454,17 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 5 Simulation API**: Public preset discovery (`GET /v1/presets`), synchronous simulation execution (`POST /v1/simulations`), integration with `behaviorsim==1.0.1` package, strict plan interaction limits, atomic reservation and automatic failure refund, seed reproducibility, and usage event auditing.
 * **Phase 6 Production Hardening & Operational Readiness**: Production configuration validation, database connection pooling, `/ready` database readiness probe, `SecurityHeadersMiddleware`, `CorrelationIdMiddleware` with contextvar structured logging, error response sanitization (500/422/domain) concealing stack traces, non-negative transactional refund safety, and comprehensive smoke/hardening test suites.
 
-## 14. Intentionally Postponed Beyond Phase 6
+## 14. Intentionally Deferred Capabilities
 
-The following capabilities are reserved for subsequent phases:
-* Asynchronous simulation execution and background job queues (Redis, Celery)
-* Long-term simulation dataset persistence and object storage (S3)
-* Billing/payment processing (Stripe)
-* Production cloud deployment
+The following capabilities are intentionally deferred for subsequent phases:
+* Asynchronous background simulation execution and job queues (Redis, Celery)
+* Long-term simulation dataset persistence and retrieval (`GET /v1/simulations/{id}`)
+* Object storage integration (S3) for simulation artifact exports
+* Billing and subscription payment processing (Stripe)
+* Cloud deployment automation (Terraform, Helm)
+
+## 15. Production Deployment
+
+For complete production deployment instructions, environment variable references, database provisioning guides, reverse proxy configurations, and health/readiness probe setups, consult:
+
+* [DEPLOYMENT.md](DEPLOYMENT.md)

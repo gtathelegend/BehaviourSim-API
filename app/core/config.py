@@ -98,9 +98,34 @@ class Settings(BaseSettings):
         if not self.WEB_BASE_URL.startswith("https://"):
             errors.append("WEB_BASE_URL must use HTTPS in production")
 
+        if not self.OAUTH_REDIRECT_BASE_URL.startswith("https://"):
+            errors.append("OAUTH_REDIRECT_BASE_URL must use HTTPS in production")
+
+        # Reject default placeholder OAuth credentials in production
+        for field_name, val in [
+            ("GOOGLE_CLIENT_ID", self.GOOGLE_CLIENT_ID),
+            ("GOOGLE_CLIENT_SECRET", self.GOOGLE_CLIENT_SECRET),
+            ("GITHUB_CLIENT_ID", self.GITHUB_CLIENT_ID),
+            ("GITHUB_CLIENT_SECRET", self.GITHUB_CLIENT_SECRET),
+        ]:
+            if val and ("your-" in val.lower() or "client-secret" in val.lower() or "example" in val.lower()):
+                errors.append(f"{field_name} contains an insecure placeholder value")
+
         for origin in self.CORS_ORIGINS:
             if origin == "*" or "localhost" in origin.lower() or "127.0.0.1" in origin:
                 errors.append(f"CORS origin '{origin}' is unsafe for production")
+
+        if self.DB_POOL_SIZE <= 0:
+            errors.append("DB_POOL_SIZE must be greater than 0")
+
+        if self.DB_MAX_OVERFLOW < 0:
+            errors.append("DB_MAX_OVERFLOW cannot be negative")
+
+        if self.DB_POOL_RECYCLE <= 0:
+            errors.append("DB_POOL_RECYCLE must be greater than 0")
+
+        if self.AUTH_SESSION_MAX_AGE_SECONDS <= 0:
+            errors.append("AUTH_SESSION_MAX_AGE_SECONDS must be positive")
 
         if errors:
             raise ValueError(f"Production configuration validation failed: {'; '.join(errors)}")

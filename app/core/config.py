@@ -62,9 +62,12 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
-        """Normalize database URL for SQLAlchemy 2 with psycopg3 if postgresql:// is provided."""
-        if isinstance(value, str) and value.startswith("postgresql://"):
-            return value.replace("postgresql://", "postgresql+psycopg://", 1)
+        """Normalize database URL for SQLAlchemy 2 with psycopg3 if postgres:// or postgresql:// is provided."""
+        if isinstance(value, str):
+            if value.startswith("postgres://"):
+                return value.replace("postgres://", "postgresql+psycopg://", 1)
+            if value.startswith("postgresql://"):
+                return value.replace("postgresql://", "postgresql+psycopg://", 1)
         return value
 
     @field_validator("CORS_ORIGINS", mode="before")

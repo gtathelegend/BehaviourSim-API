@@ -453,18 +453,22 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 4 Quotas, Rate Limiting & Usage Accounting**: Plan model and seeding, monthly usage counters, audit usage events, atomic quota reservation with concurrency protection, sliding-window rate limiting (`HTTP 429` + `Retry-After`), API key creation cap, and `GET /v1/usage`.
 * **Phase 5 Simulation API**: Public preset discovery (`GET /v1/presets`), synchronous simulation execution (`POST /v1/simulations`), integration with `behaviorsim==1.0.1` package, strict plan interaction limits, atomic reservation and automatic failure refund, seed reproducibility, and usage event auditing.
 * **Phase 6 Production Hardening & Operational Readiness**: Production configuration validation, database connection pooling, `/ready` database readiness probe, `SecurityHeadersMiddleware`, `CorrelationIdMiddleware` with contextvar structured logging, error response sanitization (500/422/domain) concealing stack traces, non-negative transactional refund safety, and comprehensive smoke/hardening test suites.
+* **Phase 7 Deployment Readiness Audit**: Complete API contract verification, `/v1/api-keys` HTTP routes (`GET`, `POST`, `DELETE`), OpenAPI 3.1 schema verification, and comprehensive 26-point production integration suite.
+* **Phase 8A Render Deployment Preparation**: Python runtime pinning (`.python-version` with 3.12.10), Render Blueprint specification (`render.yaml`), PostgreSQL connection string normalization (`postgres://` & `postgresql://`), clean lifespan engine disposal, and authoritative Render deployment runbook ([DEPLOYMENT.md](DEPLOYMENT.md)).
 
 ## 14. Intentionally Deferred Capabilities
 
 The following capabilities are intentionally deferred for subsequent phases:
-* Asynchronous background simulation execution and job queues (Redis, Celery)
+* Redis distributed state and distributed rate limiting (required before horizontally scaling API instances > 1)
+* Asynchronous background simulation execution and job queues (Celery)
 * Long-term simulation dataset persistence and retrieval (`GET /v1/simulations/{id}`)
 * Object storage integration (S3) for simulation artifact exports
 * Billing and subscription payment processing (Stripe)
-* Cloud deployment automation (Terraform, Helm)
 
-## 15. Production Deployment
+## 15. Production Deployment (Render)
 
-For complete production deployment instructions, environment variable references, database provisioning guides, reverse proxy configurations, and health/readiness probe setups, consult:
+The application is prepared for deployment on **Render** connecting to a managed Render PostgreSQL database.
 
-* [DEPLOYMENT.md](DEPLOYMENT.md)
+* **Render Blueprint**: Configured via [`render.yaml`](render.yaml) for automated provisioning.
+* **Runbook**: For environment variables, DNS setup for `api.behaviorsim.vedaangsharma.in`, database migrations, and operational maintenance, consult:
+  * [DEPLOYMENT.md](DEPLOYMENT.md)

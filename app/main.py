@@ -45,6 +45,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down %s", settings.APP_NAME)
+    # Cleanly close pooled database connections on container termination
+    from app.db.session import _engine
+    if _engine is not None:
+        _engine.dispose()
 
 
 def create_app() -> FastAPI:

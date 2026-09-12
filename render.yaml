@@ -1,0 +1,86 @@
+# ==============================================================================
+# Render Blueprint Specification for BehaviorSim API
+# Docs: https://render.com/docs/blueprint-spec
+# ==============================================================================
+
+databases:
+  - name: behaviorsim-db
+    databaseName: behaviorsim
+    user: behaviorsim_user
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: behaviorsim-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -e ."
+    preDeployCommand: "alembic upgrade head"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'"
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      # Application Environment
+      - key: APP_ENV
+        value: production
+      - key: APP_NAME
+        value: "BehaviorSim API"
+      - key: API_VERSION
+        value: "0.1.0"
+
+      # Target Domain Configurations
+      - key: API_BASE_URL
+        value: "https://api.behaviorsim.vedaangsharma.in"
+      - key: WEB_BASE_URL
+        value: "https://behaviorsim.vedaangsharma.in"
+      - key: OAUTH_REDIRECT_BASE_URL
+        value: "https://api.behaviorsim.vedaangsharma.in"
+      - key: CORS_ORIGINS
+        value: "https://behaviorsim.vedaangsharma.in"
+
+      # Database Connection (Injected automatically via internal Render network)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: behaviorsim-db
+          property: connectionString
+
+      # Database Pool Settings
+      - key: DB_POOL_SIZE
+        value: "10"
+      - key: DB_MAX_OVERFLOW
+        value: "20"
+      - key: DB_POOL_RECYCLE
+        value: "1800"
+
+      # Session & Cookie Lifecycles
+      - key: AUTH_SESSION_COOKIE_NAME
+        value: "behaviorsim_session"
+      - key: AUTH_SESSION_MAX_AGE_SECONDS
+        value: "604800"
+      - key: AUTH_OAUTH_STATE_COOKIE_NAME
+        value: "behaviorsim_oauth_state"
+      - key: AUTH_OAUTH_STATE_MAX_AGE_SECONDS
+        value: "600"
+
+      # Prefixes
+      - key: API_KEY_PREFIX
+        value: "bs_live_"
+      - key: SESSION_TOKEN_PREFIX
+        value: "bs_sess_"
+
+      # Logging
+      - key: LOG_LEVEL
+        value: "INFO"
+
+      # Sensitive Credentials (Must be provided via Render Dashboard / sync: false)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false

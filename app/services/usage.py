@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -283,8 +283,17 @@ def refund_usage(
             MonthlyUsage.period_start == period_start,
         )
         .values(
-            request_count=MonthlyUsage.request_count - delta_requests,
-            interaction_count=MonthlyUsage.interaction_count - requested_interactions,
+            request_count=case(
+                (MonthlyUsage.request_count >= delta_requests, MonthlyUsage.request_count - delta_requests),
+                else_=0,
+            ),
+            interaction_count=case(
+                (
+                    MonthlyUsage.interaction_count >= requested_interactions,
+                    MonthlyUsage.interaction_count - requested_interactions,
+                ),
+                else_=0,
+            ),
             updated_at=datetime.now(timezone.utc),
         )
     )

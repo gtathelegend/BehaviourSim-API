@@ -12,6 +12,7 @@ from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
+from app.core.middleware import CorrelationIdMiddleware, SecurityHeadersMiddleware
 
 logger = logging.getLogger("behaviorsim_api")
 
@@ -35,6 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     setup_logging(settings.LOG_LEVEL)
     logger.info("Starting %s (%s) in %s mode", settings.APP_NAME, settings.API_VERSION, settings.APP_ENV)
 
+    # Validate production configuration if running in production mode
+    settings.validate_production_configuration()
+
     # Verify BehaviorSim dependency at startup
     verify_behaviorsim_dependency()
 
@@ -55,6 +59,10 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if not settings.is_production else None,
         lifespan=lifespan,
     )
+
+    # Operational & Security Middlewares
+    application.add_middleware(CorrelationIdMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware, is_production=settings.is_production)
 
     # Production-safe CORS configuration
     cors_origins = settings.CORS_ORIGINS

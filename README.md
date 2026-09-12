@@ -54,6 +54,9 @@ cp .env.example .env
 | `API_BASE_URL` | `http://localhost:8000` | Base URL where the API is hosted |
 | `WEB_BASE_URL` | `http://localhost:3000` | Base URL of the frontend web application |
 | `DATABASE_URL` | `postgresql+psycopg://...` | Connection URI for the database (PostgreSQL with psycopg3 driver) |
+| `DB_POOL_SIZE` | `10` | Database connection pool base size (PostgreSQL) |
+| `DB_MAX_OVERFLOW` | `20` | Database connection pool max overflow connections |
+| `DB_POOL_RECYCLE` | `1800` | Database connection pool recycle time in seconds (30 mins) |
 | `API_KEY_PREFIX` | `bs_live_` | Standard prefix for developer API keys |
 | `SESSION_TOKEN_PREFIX` | `bs_sess_` | Standard prefix for user session tokens |
 | `GOOGLE_CLIENT_ID` | `""` | Google Cloud OAuth 2.0 Web Client ID |
@@ -390,7 +393,50 @@ print("Simulation ID:", result["simulation_id"])
 print("Generated Rows:", len(result["data"]))
 ```
 
-## 12. What is Implemented
+## 12. Operational Readiness & Production Hardening
+
+Phase 6 hardens the BehaviorSim API for controlled deployment with high reliability, observability, and defensive security.
+
+### Liveness vs Readiness Probes
+
+* **`GET /health`**: Lightweight zero-dependency process liveness check. Responds `200 OK` (`{"status": "ok", "app": "BehaviorSim API", ...}`) to verify the server process is responsive.
+* **`GET /ready`**: Deep readiness probe verifying database connectivity via a live test query (`SELECT 1`). Returns `200 OK` when the database is healthy, or `503 Service Unavailable` with sanitized error details if the database cannot be reached.
+
+### Security Headers & Middleware
+
+All HTTP responses automatically include hardened security headers via `SecurityHeadersMiddleware`:
+* `X-Content-Type-Options: nosniff`
+* `X-Frame-Options: DENY`
+* `Referrer-Policy: strict-origin-when-cross-origin`
+* `Content-Security-Policy: default-src 'self'`
+* `Strict-Transport-Security: max-age=31536000; includeSubDomains` (enforced when `APP_ENV=production`)
+
+### Correlation IDs & Structured Logging
+
+* `CorrelationIdMiddleware` extracts incoming `X-Request-ID` headers or generates cryptographically secure UUID4 identifiers.
+* Attached to response headers and contextualized across all application log records (`[req_id=...]`).
+* Sensitive headers (`Authorization`, `Cookie`), tokens, and credentials are automatically sanitized from logs.
+
+### Error Handling & Stack Trace Sanitization
+
+All unhandled exceptions (`HTTP 500`), Pydantic validation errors (`HTTP 422`), and domain errors return uniform, structured JSON payloads:
+```json
+{
+  "detail": "Internal server error",
+  "request_id": "c71a3962-e6fd-4100-8fae-cbeffbe0da3e"
+}
+```
+Internal stack traces, database schema details, and secrets are strictly suppressed in client responses and logged server-side with correlation IDs.
+
+### Production Configuration Validation
+
+When `APP_ENV=production`, the application lifespan executes rigorous validation checks:
+* Fails startup if default or wildcard CORS origins are configured (`localhost`, `127.0.0.1`, `*`).
+* Fails startup if default or insecure secret keys are used.
+* Fails startup if OAuth client IDs or secrets are missing.
+* Fails startup if using an insecure SQLite file or memory database in production.
+
+## 13. What is Implemented
 
 * **Phase 0 Foundation**: FastAPI application factory, logging, settings, `/health` endpoint, `behaviorsim==1.0.1` startup check.
 * **Phase 1 Database Foundation**: SQLAlchemy 2.0 declarative models (`Base`), lazy engine creation, request-scoped sessions (`get_db`), and Alembic migrations.
@@ -398,8 +444,9 @@ print("Generated Rows:", len(result["data"]))
 * **Phase 3 OAuth & Account Foundation**: Google & GitHub OAuth 2.0 flows, CSRF state protection, anti-takeover account linking, server-side session management (`user_sessions`), `/v1/auth/logout`, `/v1/account`, and unified `AuthenticatedPrincipal`.
 * **Phase 4 Quotas, Rate Limiting & Usage Accounting**: Plan model and seeding, monthly usage counters, audit usage events, atomic quota reservation with concurrency protection, sliding-window rate limiting (`HTTP 429` + `Retry-After`), API key creation cap, and `GET /v1/usage`.
 * **Phase 5 Simulation API**: Public preset discovery (`GET /v1/presets`), synchronous simulation execution (`POST /v1/simulations`), integration with `behaviorsim==1.0.1` package, strict plan interaction limits, atomic reservation and automatic failure refund, seed reproducibility, and usage event auditing.
+* **Phase 6 Production Hardening & Operational Readiness**: Production configuration validation, database connection pooling, `/ready` database readiness probe, `SecurityHeadersMiddleware`, `CorrelationIdMiddleware` with contextvar structured logging, error response sanitization (500/422/domain) concealing stack traces, non-negative transactional refund safety, and comprehensive smoke/hardening test suites.
 
-## 13. Intentionally Postponed Beyond Phase 5
+## 14. Intentionally Postponed Beyond Phase 6
 
 The following capabilities are reserved for subsequent phases:
 * Asynchronous simulation execution and background job queues (Redis, Celery)

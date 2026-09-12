@@ -17,13 +17,19 @@ def get_engine() -> Engine:
     if _engine is None:
         settings = get_settings()
         connect_args = {}
+        engine_kwargs = {"pool_pre_ping": True}
+
         if settings.DATABASE_URL.startswith("sqlite"):
             connect_args["check_same_thread"] = False
+        else:
+            engine_kwargs["pool_size"] = settings.DB_POOL_SIZE
+            engine_kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
+            engine_kwargs["pool_recycle"] = settings.DB_POOL_RECYCLE
 
         _engine = create_engine(
             settings.DATABASE_URL,
-            pool_pre_ping=True,
             connect_args=connect_args,
+            **engine_kwargs,
         )
     return _engine
 

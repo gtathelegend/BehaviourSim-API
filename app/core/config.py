@@ -51,6 +51,11 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
 
+    # Database connection pool settings (for external RDBMS)
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE: int = 1800
+
     # Logging
     LOG_LEVEL: str = "INFO"
 
@@ -76,6 +81,29 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Helper to determine if running in production mode."""
         return self.APP_ENV.lower() == "production"
+
+    def validate_production_configuration(self) -> None:
+        """Validate production prerequisites. Fails fast during startup if misconfigured."""
+        if not self.is_production:
+            return
+
+        errors: List[str] = []
+        db_lower = self.DATABASE_URL.lower()
+        if "sqlite" in db_lower or "localhost" in db_lower or "127.0.0.1" in db_lower:
+            errors.append("DATABASE_URL must point to an external production database (not sqlite or localhost)")
+
+        if not self.API_BASE_URL.startswith("https://"):
+            errors.append("API_BASE_URL must use HTTPS in production")
+
+        if not self.WEB_BASE_URL.startswith("https://"):
+            errors.append("WEB_BASE_URL must use HTTPS in production")
+
+        for origin in self.CORS_ORIGINS:
+            if origin == "*" or "localhost" in origin.lower() or "127.0.0.1" in origin:
+                errors.append(f"CORS origin '{origin}' is unsafe for production")
+
+        if errors:
+            raise ValueError(f"Production configuration validation failed: {'; '.join(errors)}")
 
 
 @lru_cache()

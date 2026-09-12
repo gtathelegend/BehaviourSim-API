@@ -17,7 +17,7 @@ def test_python_version_file_matches_supported_runtime():
 
 
 def test_database_url_normalization_postgres_and_postgresql():
-    """Verify that both postgres:// and postgresql:// are normalized to postgresql+psycopg://."""
+    """Verify that both postgres:// and postgresql:// are normalized to postgresql+psycopg://, preserving query params."""
     s1 = Settings(DATABASE_URL="postgres://usr:pwd@host.render.com:5432/mydb")
     assert s1.DATABASE_URL == "postgresql+psycopg://usr:pwd@host.render.com:5432/mydb"
 
@@ -27,22 +27,22 @@ def test_database_url_normalization_postgres_and_postgresql():
     s3 = Settings(DATABASE_URL="postgresql+psycopg://usr:pwd@host.render.com:5432/mydb")
     assert s3.DATABASE_URL == "postgresql+psycopg://usr:pwd@host.render.com:5432/mydb"
 
+    # Verify Neon SSL query parameter preservation
+    neon_url = "postgresql://user:pass@ep-plain-snow-123456.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    s_neon = Settings(DATABASE_URL=neon_url)
+    assert s_neon.DATABASE_URL == "postgresql+psycopg://user:pass@ep-plain-snow-123456.us-east-2.aws.neon.tech/neondb?sslmode=require"
+
 
 def test_render_blueprint_validity_and_safety():
-    """Verify render.yaml structure, services, and zero-secret invariants."""
+    """Verify render.yaml structure, services, and zero-secret invariants for Neon PostgreSQL architecture."""
     blueprint_path = Path(__file__).resolve().parent.parent / "render.yaml"
     assert blueprint_path.exists(), "render.yaml must exist in repository root"
 
     with open(blueprint_path, "r", encoding="utf-8") as f:
         spec = yaml.safe_load(f)
 
-    # 1. Databases section
-    assert "databases" in spec
-    assert len(spec["databases"]) == 1
-    db_spec = spec["databases"][0]
-    assert db_spec["name"] == "behaviorsim-db"
-    assert db_spec["databaseName"] == "behaviorsim"
-    assert db_spec["user"] == "behaviorsim_user"
+    # 1. Databases section must NOT be present (PostgreSQL is hosted on Neon, not Render)
+    assert "databases" not in spec or spec.get("databases") is None
 
     # 2. Services section
     assert "services" in spec
@@ -63,9 +63,11 @@ def test_render_blueprint_validity_and_safety():
     assert env_vars["WEB_BASE_URL"]["value"] == "https://behaviorsim.vedaangsharma.in"
     assert env_vars["CORS_ORIGINS"]["value"] == "https://behaviorsim.vedaangsharma.in"
 
-    # Database URL is injected via Render internal property
-    assert "fromDatabase" in env_vars["DATABASE_URL"]
-    assert env_vars["DATABASE_URL"]["fromDatabase"]["name"] == "behaviorsim-db"
+    # Database URL is supplied externally from Neon via Render secret dashboard (sync: false)
+    assert "DATABASE_URL" in env_vars
+    assert env_vars["DATABASE_URL"].get("sync") is False
+    assert "value" not in env_vars["DATABASE_URL"], "DATABASE_URL must not contain hardcoded value in render.yaml"
+    assert "fromDatabase" not in env_vars["DATABASE_URL"], "DATABASE_URL must not reference internal Render PostgreSQL"
 
     # Sensitive OAuth credentials must be marked sync: false
     for secret_key in ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"]:

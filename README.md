@@ -465,10 +465,14 @@ The following capabilities are intentionally deferred for subsequent phases:
 * Object storage integration (S3) for simulation artifact exports
 * Billing and subscription payment processing (Stripe)
 
-## 15. Production Deployment (Render)
+## 15. Production Deployment (Render + Neon)
 
-The application is prepared for deployment on **Render** connecting to a managed Render PostgreSQL database.
+The application is prepared for production deployment with the following architecture:
+* **Web Service / API**: Hosted on **Render** (`api.behaviorsim.vedaangsharma.in`), running FastAPI / Uvicorn.
+* **Database**: Managed **Neon Serverless PostgreSQL** with mandatory TLS/SSL (`?sslmode=require`).
 
-* **Render Blueprint**: Configured via [`render.yaml`](render.yaml) for automated provisioning.
-* **Runbook**: For environment variables, DNS setup for `api.behaviorsim.vedaangsharma.in`, database migrations, and operational maintenance, consult:
+Key operational resources:
+* **Render Blueprint**: Configured via [`render.yaml`](render.yaml) for web service provisioning with external database secret binding (`sync: false`).
+* **Database Verification**: Safe diagnostic connectivity script available at [`scripts/verify_db_connectivity.py`](scripts/verify_db_connectivity.py).
+* **Authoritative Runbook**: Step-by-step instructions for Neon project creation, environment configuration, DNS setup, database migrations, and operational maintenance are detailed in:
   * [DEPLOYMENT.md](DEPLOYMENT.md)

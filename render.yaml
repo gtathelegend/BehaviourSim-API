@@ -2,14 +2,10 @@
 # Render Blueprint Specification for BehaviorSim API
 # Docs: https://render.com/docs/blueprint-spec
 # ==============================================================================
-
-databases:
-  - name: behaviorsim-db
-    databaseName: behaviorsim
-    user: behaviorsim_user
-    plan: free
-    region: oregon
-    postgresMajorVersion: "16"
+# Architecture:
+# - Web Service: Render (FastAPI / Uvicorn)
+# - Database: Neon PostgreSQL (Serverless external RDBMS via DATABASE_URL secret)
+# ==============================================================================
 
 services:
   - type: web
@@ -41,11 +37,9 @@ services:
       - key: CORS_ORIGINS
         value: "https://behaviorsim.vedaangsharma.in"
 
-      # Database Connection (Injected automatically via internal Render network)
+      # Neon PostgreSQL Connection String (Supplied securely as Render Secret)
       - key: DATABASE_URL
-        fromDatabase:
-          name: behaviorsim-db
-          property: connectionString
+        sync: false
 
       # Database Pool Settings
       - key: DB_POOL_SIZE
@@ -75,7 +69,7 @@ services:
       - key: LOG_LEVEL
         value: "INFO"
 
-      # Sensitive Credentials (Must be provided via Render Dashboard / sync: false)
+      # Sensitive OAuth Credentials (Must be provided via Render Dashboard / sync: false)
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET

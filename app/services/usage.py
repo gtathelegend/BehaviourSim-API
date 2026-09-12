@@ -266,3 +266,33 @@ def get_user_usage_summary(db: Session, user: User) -> Dict[str, Any]:
             "interactions": remaining_interactions,
         },
     }
+
+
+def refund_usage(
+    db: Session,
+    user: User,
+    requested_interactions: int,
+    delta_requests: int = 1,
+) -> None:
+    """Atomically decrement usage counters when simulation execution fails after quota reservation."""
+    period_start = get_current_period_start()
+    stmt = (
+        update(MonthlyUsage)
+        .where(
+            MonthlyUsage.user_id == user.id,
+            MonthlyUsage.period_start == period_start,
+        )
+        .values(
+            request_count=MonthlyUsage.request_count - delta_requests,
+            interaction_count=MonthlyUsage.interaction_count - requested_interactions,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    db.execute(stmt)
+    db.commit()
+    logger.info(
+        "Refunded usage for user_id=%s: -%s requests, -%s interactions",
+        user.id,
+        delta_requests,
+        requested_interactions,
+    )

@@ -295,18 +295,114 @@ Requires authentication (cookie, session token, or API key) and enforces rate li
 }
 ```
 
-## 11. What is Implemented
+## 11. Simulation API
+
+Phase 5 establishes the production-facing simulation and domain discovery endpoints interfacing directly with the published `behaviorsim==1.0.1` package.
+
+### Presets Discovery
+
+```http
+GET /v1/presets
+GET /v1/presets/{preset}
+```
+
+Publicly accessible discovery endpoints describing supported domains, cohorts/profiles, and state names without triggering simulation compute.
+
+**Available Presets:**
+- `education`: Adaptive learning telemetry modeling cognitive load, accuracy, response times, and student mastery.
+- `finance`: Financial trading telemetry, risk alerts, drawdowns, and portfolio volatility.
+- `healthcare`: Patient monitoring telemetry tracking vital trends, alerts, and mobility trajectories.
+- `mobile_app` (or alias `mobile`): User engagement tracking session duration, navigation depth, actions, and checkout flows.
+
+### Execute Simulation
+
+```http
+POST /v1/simulations
+```
+
+Requires authentication (API key or user session token) and enforces rate limiting (5 req/min on Free plan) and monthly quota.
+
+**Request Schema:**
+
+```json
+{
+  "preset": "education",
+  "num_interactions": 100,
+  "seed": 42,
+  "profile": "average",
+  "initial_state": "Optimal"
+}
+```
+
+**Response (HTTP 200 OK):**
+
+```json
+{
+  "simulation_id": "2728f775-9874-4dad-8584-10b9b43eb8f4",
+  "preset": "education",
+  "num_interactions": 100,
+  "seed": 42,
+  "data": [
+    {
+      "profile": "average",
+      "sequence_id": 1,
+      "interaction_id": 1,
+      "state": "Optimal",
+      "difficulty": 1,
+      "accuracy": 0,
+      "nrt": 1.215,
+      "retries": 1,
+      "help_requested": 0,
+      "confidence": 2
+    }
+  ],
+  "metadata": {
+    "behaviorsim_version": "1.0.1",
+    "api_version": "0.1.0",
+    "compute_ms": 12,
+    "reproducible": true
+  }
+}
+```
+
+### Python Client Example
+
+```python
+import requests
+
+# Local development or production endpoint
+API_URL = "http://localhost:8000/v1/simulations"
+API_KEY = "bs_live_your_api_key_here"
+
+response = requests.post(
+    API_URL,
+    headers={"Authorization": f"Bearer {API_KEY}"},
+    json={
+        "preset": "education",
+        "num_interactions": 100,
+        "seed": 42,
+    },
+)
+
+response.raise_for_status()
+result = response.json()
+print("Simulation ID:", result["simulation_id"])
+print("Generated Rows:", len(result["data"]))
+```
+
+## 12. What is Implemented
 
 * **Phase 0 Foundation**: FastAPI application factory, logging, settings, `/health` endpoint, `behaviorsim==1.0.1` startup check.
 * **Phase 1 Database Foundation**: SQLAlchemy 2.0 declarative models (`Base`), lazy engine creation, request-scoped sessions (`get_db`), and Alembic migrations.
 * **Phase 2 API Key Foundation**: Developer API-key generation/hashing/verification, API-key lifecycle service (`create`, `list`, `revoke`, `validate`).
 * **Phase 3 OAuth & Account Foundation**: Google & GitHub OAuth 2.0 flows, CSRF state protection, anti-takeover account linking, server-side session management (`user_sessions`), `/v1/auth/logout`, `/v1/account`, and unified `AuthenticatedPrincipal`.
 * **Phase 4 Quotas, Rate Limiting & Usage Accounting**: Plan model and seeding, monthly usage counters, audit usage events, atomic quota reservation with concurrency protection, sliding-window rate limiting (`HTTP 429` + `Retry-After`), API key creation cap, and `GET /v1/usage`.
+* **Phase 5 Simulation API**: Public preset discovery (`GET /v1/presets`), synchronous simulation execution (`POST /v1/simulations`), integration with `behaviorsim==1.0.1` package, strict plan interaction limits, atomic reservation and automatic failure refund, seed reproducibility, and usage event auditing.
 
-## 12. Intentionally Not Implemented in Phase 4
+## 13. Intentionally Postponed Beyond Phase 5
 
 The following capabilities are reserved for subsequent phases:
-* Simulation execution endpoints (`/v1/simulations`) and parameter validation
-* Simulation worker architecture and job queues (Redis, Celery)
+* Asynchronous simulation execution and background job queues (Redis, Celery)
+* Long-term simulation dataset persistence and object storage (S3)
 * Billing/payment processing (Stripe)
 * Production cloud deployment

@@ -44,3 +44,35 @@ def verify_api_key(raw_key: str, stored_hash: str) -> bool:
     """
     candidate_hash = hash_api_key(raw_key)
     return hmac.compare_digest(candidate_hash, stored_hash)
+
+
+def generate_session_token(prefix: str = "bs_sess_") -> Tuple[str, str]:
+    """Generate a high-entropy session token and its SHA-256 hash.
+
+    Key Structure:
+    - Raw Token: `{prefix}{secret}` where secret has 256 bits (32 bytes) of cryptographic randomness.
+    - Token Hash: SHA-256 digest stored in the database.
+
+    Returns:
+        Tuple of (raw_token, token_hash)
+    """
+    secret = secrets.token_urlsafe(32)
+    raw_token = f"{prefix}{secret}"
+    token_hash = hash_session_token(raw_token)
+    return raw_token, token_hash
+
+
+def hash_session_token(raw_token: str) -> str:
+    """Compute SHA-256 cryptographic hex digest of a session token."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def verify_session_token(raw_token: str, stored_hash: str) -> bool:
+    """Verify a session token against a stored hash using constant-time comparison."""
+    candidate_hash = hash_session_token(raw_token)
+    return hmac.compare_digest(candidate_hash, stored_hash)
+
+
+def generate_oauth_state() -> str:
+    """Generate a cryptographically secure random state parameter for OAuth CSRF protection."""
+    return secrets.token_urlsafe(32)

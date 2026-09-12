@@ -25,6 +25,7 @@ def test_alembic_upgrade_downgrade_cycle(tmp_path: Path):
     assert "users" in tables
     assert "auth_identities" in tables
     assert "api_keys" in tables
+    assert "user_sessions" in tables
     assert "alembic_version" in tables
 
     # 2. Downgrade to base
@@ -34,6 +35,7 @@ def test_alembic_upgrade_downgrade_cycle(tmp_path: Path):
     assert "users" not in tables_after_downgrade
     assert "auth_identities" not in tables_after_downgrade
     assert "api_keys" not in tables_after_downgrade
+    assert "user_sessions" not in tables_after_downgrade
 
     # 3. Re-upgrade to head
     command.upgrade(alembic_cfg, "head")
@@ -42,3 +44,4 @@ def test_alembic_upgrade_downgrade_cycle(tmp_path: Path):
     assert "users" in re_tables
     assert "auth_identities" in re_tables
     assert "api_keys" in re_tables
+    assert "user_sessions" in re_tables

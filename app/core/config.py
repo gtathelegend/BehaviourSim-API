@@ -30,6 +30,20 @@ class Settings(BaseSettings):
 
     # Authentication & API Key configuration
     API_KEY_PREFIX: str = "bs_live_"
+    SESSION_TOKEN_PREFIX: str = "bs_sess_"
+
+    # Session & Cookie configuration
+    AUTH_SESSION_COOKIE_NAME: str = "behaviorsim_session"
+    AUTH_SESSION_MAX_AGE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
+    AUTH_OAUTH_STATE_COOKIE_NAME: str = "behaviorsim_oauth_state"
+    AUTH_OAUTH_STATE_MAX_AGE_SECONDS: int = 600  # 10 minutes
+
+    # OAuth configuration (Google & GitHub)
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+    OAUTH_REDIRECT_BASE_URL: str = "http://localhost:8000"
 
     # CORS configuration
     CORS_ORIGINS: Union[List[str], str] = [

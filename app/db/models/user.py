@@ -12,6 +12,7 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.db.models.auth_identity import AuthIdentity
     from app.db.models.api_key import APIKey
+    from app.db.models.session import UserSession
 
 
 def utc_now() -> datetime:
@@ -64,6 +65,11 @@ class User(Base):
     )
     api_keys: Mapped[List["APIKey"]] = relationship(
         "APIKey",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    sessions: Mapped[List["UserSession"]] = relationship(
+        "UserSession",
         back_populates="user",
         cascade="all, delete-orphan",
     )

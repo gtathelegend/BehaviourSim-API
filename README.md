@@ -226,22 +226,87 @@ Requires authentication (via cookie, Bearer session token, or developer API key)
   "display_name": "Developer User",
   "is_active": true,
   "created_at": "2026-09-12T22:00:00Z",
+  "plan": "free",
   "authentication_methods": ["github", "api_key"]
 }
 ```
 
-## 10. What is Implemented
+## 10. Quotas, Rate Limiting & Usage Accounting
+
+Phase 4 establishes the usage-control and boundary layer protecting backend simulation compute:
+
+### Plans & Entitlements
+
+Each user is assigned a plan (defaults to `free` plan):
+
+* **Monthly Requests**: 100 requests / month
+* **Monthly Interactions**: 10,000 interactions / month
+* **Single-Request Limit**: 1,000 interactions / request
+* **Rate Limit**: 5 requests / minute
+* **Max Concurrent Simulations**: 1
+* **Max Developer API Keys**: 5 active keys
+
+### Usage Accounting Architecture
+
+* **`monthly_usage`**: Aggregated monthly counters (`request_count`, `interaction_count`) scoped to UTC calendar month boundaries (`period_start`).
+* **`usage_events`**: Append-only event audit log recording every reservation and completion with interaction counts, success flags, compute latency (`compute_ms`), and attribution (`api_key_id`, `request_id`).
+* **Atomic Quota Reservation (`reserve_usage`)**: Uses conditional SQL updates (`UPDATE monthly_usage SET ... WHERE request_count + delta <= limit`) ensuring zero oversubscription under high concurrency.
+* **Per-Request Interaction Boundary**: Rejects simulation requests upfront if requested interactions exceed plan maximum (`HTTP 400`).
+* **Monthly Quota Boundary**: Rejects requests when monthly limits are reached (`HTTP 429` with `quota_exceeded`).
+* **Key Creation Cap**: Rejects API key creation if active key count reaches plan limit (`HTTP 400`).
+
+### Request Rate Limiting
+
+* **Sliding-Window Limiter**: In-memory thread-safe rate limiter tracking timestamps per user over 60-second windows.
+* **HTTP 429 Too Many Requests**: Returns standard error payload along with standard `Retry-After: <seconds>` HTTP header.
+* **FastAPI Dependency**: `check_rate_limit` integrates cleanly on protected endpoints.
+
+### Usage Endpoint
+
+```http
+GET /v1/usage
+```
+
+Requires authentication (cookie, session token, or API key) and enforces rate limits.
+
+**Response (HTTP 200 OK):**
+
+```json
+{
+  "plan": "free",
+  "period_start": "2026-09-01T00:00:00Z",
+  "period_end": "2026-10-01T00:00:00Z",
+  "limits": {
+    "monthly_requests": 100,
+    "monthly_interactions": 10000,
+    "max_interactions_per_request": 1000,
+    "requests_per_minute": 5,
+    "max_concurrent_simulations": 1,
+    "max_api_keys": 5
+  },
+  "usage": {
+    "requests": 12,
+    "interactions": 1200
+  },
+  "remaining": {
+    "requests": 88,
+    "interactions": 8800
+  }
+}
+```
+
+## 11. What is Implemented
 
 * **Phase 0 Foundation**: FastAPI application factory, logging, settings, `/health` endpoint, `behaviorsim==1.0.1` startup check.
-* **Phase 1 Database Foundation**: SQLAlchemy 2.0 declarative models (`Base`), lazy engine creation, request-scoped sessions (`get_db`), and Alembic migrations (`0001_initial_auth_tables`, `0002_user_sessions`).
+* **Phase 1 Database Foundation**: SQLAlchemy 2.0 declarative models (`Base`), lazy engine creation, request-scoped sessions (`get_db`), and Alembic migrations.
 * **Phase 2 API Key Foundation**: Developer API-key generation/hashing/verification, API-key lifecycle service (`create`, `list`, `revoke`, `validate`).
 * **Phase 3 OAuth & Account Foundation**: Google & GitHub OAuth 2.0 flows, CSRF state protection, anti-takeover account linking, server-side session management (`user_sessions`), `/v1/auth/logout`, `/v1/account`, and unified `AuthenticatedPrincipal`.
+* **Phase 4 Quotas, Rate Limiting & Usage Accounting**: Plan model and seeding, monthly usage counters, audit usage events, atomic quota reservation with concurrency protection, sliding-window rate limiting (`HTTP 429` + `Retry-After`), API key creation cap, and `GET /v1/usage`.
 
-## 11. Intentionally Not Implemented in Phase 3
+## 12. Intentionally Not Implemented in Phase 4
 
 The following capabilities are reserved for subsequent phases:
-* Rate limiting and quota management
-* Simulation execution and parameter validation endpoints (`/v1/simulations`)
-* Usage accounting and billing integration
-* Background task workers (Celery, Redis)
+* Simulation execution endpoints (`/v1/simulations`) and parameter validation
+* Simulation worker architecture and job queues (Redis, Celery)
+* Billing/payment processing (Stripe)
 * Production cloud deployment

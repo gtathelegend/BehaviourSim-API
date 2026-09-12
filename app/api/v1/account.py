@@ -26,6 +26,7 @@ class AccountResponse(BaseModel):
     is_active: bool
     created_at: datetime
     authentication_methods: List[str]
+    plan: str
 
 
 @router.get("/account", response_model=AccountResponse)
@@ -48,6 +49,8 @@ async def get_account(
     if has_api_keys or principal.authentication_method == "api_key":
         methods.add("api_key")
 
+    plan_name = user.plan.name if user.plan else "free"
+
     return AccountResponse(
         id=user.id,
         email=user.email,
@@ -55,4 +58,5 @@ async def get_account(
         is_active=user.is_active,
         created_at=user.created_at,
         authentication_methods=sorted(list(methods)),
+        plan=plan_name,
     )

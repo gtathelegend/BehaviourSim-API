@@ -65,11 +65,15 @@ def resolve_or_create_user_identity(db: Session, identity: ProviderIdentity) -> 
         )
 
     # 3. Create new User and AuthIdentity atomically
+    from app.services.plan import get_or_create_free_plan
+
+    free_plan = get_or_create_free_plan(db)
     new_user = User(
         id=uuid.uuid4(),
         email=identity.email,
         display_name=identity.display_name,
         is_active=True,
+        plan_id=free_plan.id,
     )
     db.add(new_user)
     db.flush()

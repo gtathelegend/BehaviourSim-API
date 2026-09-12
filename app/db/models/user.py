@@ -4,15 +4,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, String, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+from app.db.models.plan import FREE_PLAN_ID
 
 if TYPE_CHECKING:
     from app.db.models.auth_identity import AuthIdentity
     from app.db.models.api_key import APIKey
+    from app.db.models.plan import Plan
     from app.db.models.session import UserSession
+    from app.db.models.usage import MonthlyUsage, UsageEvent
 
 
 def utc_now() -> datetime:
@@ -45,6 +48,12 @@ class User(Base):
         default=True,
         nullable=False,
     )
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("plans.id"),
+        default=FREE_PLAN_ID,
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -70,6 +79,20 @@ class User(Base):
     )
     sessions: Mapped[List["UserSession"]] = relationship(
         "UserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    plan: Mapped["Plan"] = relationship(
+        "Plan",
+        back_populates="users",
+    )
+    monthly_usages: Mapped[List["MonthlyUsage"]] = relationship(
+        "MonthlyUsage",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    usage_events: Mapped[List["UsageEvent"]] = relationship(
+        "UsageEvent",
         back_populates="user",
         cascade="all, delete-orphan",
     )

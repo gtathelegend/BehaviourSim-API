@@ -13,11 +13,13 @@ class BehaviorSimAPIError(Exception):
         message: str,
         status_code: int = 500,
         details: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.details = details or {}
+        self.headers = headers
 
 
 def register_error_handlers(app: FastAPI) -> None:
@@ -36,4 +38,5 @@ def register_error_handlers(app: FastAPI) -> None:
                     "details": exc.details,
                 }
             },
+            headers=exc.headers,
         )

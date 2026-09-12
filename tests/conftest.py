@@ -27,8 +27,12 @@ TestingSessionLocal = sessionmaker(
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
-    """Create all database tables once for the test session."""
+    """Create all database tables once for the test session and seed free plan."""
     Base.metadata.create_all(bind=test_engine)
+    with TestingSessionLocal() as session:
+        from app.services.plan import get_or_create_free_plan
+
+        get_or_create_free_plan(session)
     yield
     Base.metadata.drop_all(bind=test_engine)
 

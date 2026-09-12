@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import AuthenticatedPrincipal
 from app.core.config import get_settings
+from app.core.errors import BehaviorSimAPIError
 from app.core.security import generate_api_key, verify_api_key
 from app.db.models.api_key import APIKey
 from app.db.models.user import User
@@ -32,7 +33,35 @@ def create_api_key(db: Session, user: User, name: str) -> APIKeyCreateResult:
     """Create a new API key for the specified user.
 
     The raw key string is returned exactly once in the result object and is never persisted.
+    Enforces the user's plan max_api_keys limit.
     """
+    if user.plan:
+        active_count = db.scalars(
+            select(func.count(APIKey.id)).where(
+                APIKey.user_id == user.id,
+                APIKey.is_active.is_(True),
+            )
+        ).first() or 0
+
+        if active_count >= user.plan.max_api_keys:
+            logger.warning(
+                "API key limit reached for user_id=%s on plan '%s' (%s/%s)",
+                user.id,
+                user.plan.name,
+                active_count,
+                user.plan.max_api_keys,
+            )
+            raise BehaviorSimAPIError(
+                message=f"Active API key limit reached for plan '{user.plan.name}'. Maximum allowed: {user.plan.max_api_keys}.",
+                status_code=403,
+                details={
+                    "code": "plan_limit_exceeded",
+                    "resource": "api_keys",
+                    "max_allowed": user.plan.max_api_keys,
+                    "current": active_count,
+                },
+            )
+
     settings = get_settings()
     raw_key, key_prefix, key_hash = generate_api_key(prefix=settings.API_KEY_PREFIX)
 

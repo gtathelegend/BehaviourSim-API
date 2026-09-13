@@ -559,3 +559,394 @@ def test_simulation_persistence_failure_refunds_quota(client: TestClient, db_ses
     assert usage is not None
     assert usage.request_count == 0
     assert usage.interaction_count == 0
+
+
+# ============================================================================
+# 8. Phase 12 Simulation History & List Tests (GET /v1/simulations)
+# ============================================================================
+
+def test_list_simulations_unauthenticated(client: TestClient, db_session: Session):
+    """Verify unauthenticated GET /v1/simulations returns HTTP 401."""
+    resp = client.get("/v1/simulations")
+    assert resp.status_code == 401
+
+
+def test_list_simulations_empty_history(client: TestClient, db_session: Session):
+    """Verify authenticated user with no simulations receives empty list and total=0."""
+    user = User(email="empty_sim_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Empty Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    resp = client.get("/v1/simulations", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["items"] == []
+    assert data["total"] == 0
+    assert data["page"] == 1
+    assert data["page_size"] == 20
+    assert data["has_next"] is False
+
+
+def test_list_simulations_basic_and_ordering(client: TestClient, db_session: Session):
+    """Verify multiple simulations are returned newest first with bounded metadata."""
+    user = User(email="list_order_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Order Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim1 = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=10,
+        seed=1,
+        status="completed",
+        data=[{"i": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=15,
+        reproducible=True,
+    )
+    sim2 = Simulation(
+        user_id=user.id,
+        preset="finance",
+        num_interactions=20,
+        seed=2,
+        status="completed",
+        data=[{"i": 2}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=25,
+        reproducible=True,
+    )
+    db_session.add_all([sim1, sim2])
+    db_session.commit()
+
+    resp = client.get("/v1/simulations", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    # Verify newest first (sim2 was committed after sim1)
+    item_ids = [item["simulation_id"] for item in data["items"]]
+    assert str(sim2.id) in item_ids
+    assert str(sim1.id) in item_ids
+
+    # Verify lightweight fields are present
+    first_item = data["items"][0]
+    assert "simulation_id" in first_item
+    assert "preset" in first_item
+    assert "num_interactions" in first_item
+    assert "status" in first_item
+    assert "compute_ms" in first_item
+    assert "reproducible" in first_item
+    assert "created_at" in first_item
+    assert "completed_at" in first_item
+
+
+def test_list_simulations_excludes_data_payload(client: TestClient, db_session: Session):
+    """Verify GET /v1/simulations strictly omits the heavy data payload from items."""
+    user = User(email="no_data_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="NoData Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=50,
+        seed=42,
+        status="completed",
+        data=[{"heavy_telemetry": "sample_record"}] * 50,
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=30,
+        reproducible=True,
+    )
+    db_session.add(sim)
+    db_session.commit()
+
+    resp = client.get("/v1/simulations", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["items"]) == 1
+    assert "data" not in data["items"][0]
+
+
+def test_list_simulations_pagination(client: TestClient, db_session: Session):
+    """Verify pagination mechanics: page, page_size, total, and has_next boundaries."""
+    user = User(email="paging_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Paging Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sims = [
+        Simulation(
+            user_id=user.id,
+            preset="education",
+            num_interactions=i,
+            seed=i,
+            status="completed",
+            data=[{"i": i}],
+            behaviorsim_version="1.0.1",
+            api_version="0.1.0",
+            compute_ms=10,
+            reproducible=True,
+        )
+        for i in range(1, 6)
+    ]
+    db_session.add_all(sims)
+    db_session.commit()
+
+    # Page 1, size 2 -> items: 2, total: 5, has_next: True
+    r1 = client.get("/v1/simulations?page=1&page_size=2", headers=headers)
+    assert r1.status_code == 200
+    d1 = r1.json()
+    assert len(d1["items"]) == 2
+    assert d1["total"] == 5
+    assert d1["page"] == 1
+    assert d1["page_size"] == 2
+    assert d1["has_next"] is True
+
+    # Page 2, size 2 -> items: 2, total: 5, has_next: True
+    r2 = client.get("/v1/simulations?page=2&page_size=2", headers=headers)
+    assert r2.status_code == 200
+    d2 = r2.json()
+    assert len(d2["items"]) == 2
+    assert d2["has_next"] is True
+
+    # Ensure Page 1 and Page 2 items do not overlap
+    page1_ids = {item["simulation_id"] for item in d1["items"]}
+    page2_ids = {item["simulation_id"] for item in d2["items"]}
+    assert page1_ids.isdisjoint(page2_ids)
+
+    # Page 3, size 2 -> items: 1, total: 5, has_next: False
+    r3 = client.get("/v1/simulations?page=3&page_size=2", headers=headers)
+    assert r3.status_code == 200
+    d3 = r3.json()
+    assert len(d3["items"]) == 1
+    assert d3["has_next"] is False
+
+    # Page 4, size 2 -> items: 0, total: 5, has_next: False
+    r4 = client.get("/v1/simulations?page=4&page_size=2", headers=headers)
+    assert r4.status_code == 200
+    d4 = r4.json()
+    assert len(d4["items"]) == 0
+    assert d4["has_next"] is False
+
+
+def test_list_simulations_pagination_validation(client: TestClient, db_session: Session):
+    """Verify invalid pagination query params return HTTP 422 validation error."""
+    user = User(email="val_page_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Val Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # page=0 is invalid (ge=1)
+    r_page_zero = client.get("/v1/simulations?page=0", headers=headers)
+    assert r_page_zero.status_code == 422
+
+    # page_size=0 is invalid (ge=1)
+    r_size_zero = client.get("/v1/simulations?page_size=0", headers=headers)
+    assert r_size_zero.status_code == 422
+
+    # page_size=101 is invalid (le=100)
+    r_size_excess = client.get("/v1/simulations?page_size=101", headers=headers)
+    assert r_size_excess.status_code == 422
+
+
+def test_list_simulations_filtering(client: TestClient, db_session: Session):
+    """Verify bounded filtering on preset (with alias normalization) and status."""
+    user = User(email="filter_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Filter Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim_edu = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=10,
+        status="completed",
+        data=[{"e": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim_fin = Simulation(
+        user_id=user.id,
+        preset="finance",
+        num_interactions=10,
+        status="completed",
+        data=[{"f": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim_mob = Simulation(
+        user_id=user.id,
+        preset="mobile_app",
+        num_interactions=10,
+        status="completed",
+        data=[{"m": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add_all([sim_edu, sim_fin, sim_mob])
+    db_session.commit()
+
+    # Filter preset=education
+    r_edu = client.get("/v1/simulations?preset=education", headers=headers)
+    assert r_edu.status_code == 200
+    d_edu = r_edu.json()
+    assert d_edu["total"] == 1
+    assert d_edu["items"][0]["preset"] == "education"
+
+    # Filter preset=mobile (alias for mobile_app)
+    r_mob = client.get("/v1/simulations?preset=mobile", headers=headers)
+    assert r_mob.status_code == 200
+    d_mob = r_mob.json()
+    assert d_mob["total"] == 1
+    assert d_mob["items"][0]["preset"] == "mobile_app"
+
+    # Filter status=completed
+    r_stat = client.get("/v1/simulations?status=completed", headers=headers)
+    assert r_stat.status_code == 200
+    assert r_stat.json()["total"] == 3
+
+    # Combined matching filter
+    r_comb = client.get("/v1/simulations?preset=finance&status=completed", headers=headers)
+    assert r_comb.status_code == 200
+    assert r_comb.json()["total"] == 1
+    assert r_comb.json()["items"][0]["preset"] == "finance"
+
+    # Combined non-matching filter
+    r_non = client.get("/v1/simulations?preset=finance&status=failed", headers=headers)
+    assert r_non.status_code == 200
+    assert r_non.json()["total"] == 0
+    assert r_non.json()["items"] == []
+
+
+def test_list_simulations_invalid_filters(client: TestClient, db_session: Session):
+    """Verify invalid preset or status raises HTTP 400 with descriptive error code."""
+    user = User(email="invalid_filter_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Invalid Filter Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # Invalid preset
+    r_inv_preset = client.get("/v1/simulations?preset=unknown_domain", headers=headers)
+    assert r_inv_preset.status_code == 400
+    assert r_inv_preset.json()["error"]["details"]["code"] == "invalid_preset"
+
+    # Invalid status
+    r_inv_status = client.get("/v1/simulations?status=destroyed", headers=headers)
+    assert r_inv_status.status_code == 400
+    assert r_inv_status.json()["error"]["details"]["code"] == "invalid_status"
+
+
+def test_list_simulations_ownership_isolation(client: TestClient, db_session: Session):
+    """Verify strict caller ownership scoping: User A cannot see User B's simulations or totals."""
+    user_a = User(email="owner_a_list@example.com")
+    user_b = User(email="owner_b_list@example.com")
+    db_session.add_all([user_a, user_b])
+    db_session.commit()
+
+    key_a = create_api_key(db_session, user_a, name="Key A")
+    key_b = create_api_key(db_session, user_b, name="Key B")
+
+    sim_a1 = Simulation(
+        user_id=user_a.id,
+        preset="education",
+        num_interactions=10,
+        status="completed",
+        data=[{"a": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim_a2 = Simulation(
+        user_id=user_a.id,
+        preset="finance",
+        num_interactions=10,
+        status="completed",
+        data=[{"a": 2}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim_b1 = Simulation(
+        user_id=user_b.id,
+        preset="healthcare",
+        num_interactions=10,
+        status="completed",
+        data=[{"b": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add_all([sim_a1, sim_a2, sim_b1])
+    db_session.commit()
+
+    # User A listing
+    r_a = client.get("/v1/simulations", headers={"Authorization": f"Bearer {key_a.key}"})
+    assert r_a.status_code == 200
+    d_a = r_a.json()
+    assert d_a["total"] == 2
+    a_ids = {item["simulation_id"] for item in d_a["items"]}
+    assert a_ids == {str(sim_a1.id), str(sim_a2.id)}
+    assert str(sim_b1.id) not in a_ids
+
+    # User B listing
+    r_b = client.get("/v1/simulations", headers={"Authorization": f"Bearer {key_b.key}"})
+    assert r_b.status_code == 200
+    d_b = r_b.json()
+    assert d_b["total"] == 1
+    b_ids = {item["simulation_id"] for item in d_b["items"]}
+    assert b_ids == {str(sim_b1.id)}
+    assert str(sim_a1.id) not in b_ids
+    assert str(sim_a2.id) not in b_ids
+
+
+def test_simulation_detail_regression_with_history(client: TestClient, db_session: Session):
+    """Verify GET /v1/simulations/{id} still retrieves full record including data payload."""
+    user = User(email="detail_regress_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=5,
+        seed=99,
+        status="completed",
+        data=[{"row": 1}, {"row": 2}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=12,
+        reproducible=True,
+    )
+    db_session.add(sim)
+    db_session.commit()
+
+    resp = client.get(f"/v1/simulations/{sim.id}", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["simulation_id"] == str(sim.id)
+    assert data["data"] == [{"row": 1}, {"row": 2}]
+    assert data["preset"] == "education"

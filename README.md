@@ -376,6 +376,52 @@ Requires authentication (API key or user session token) and enforces rate limiti
 }
 ```
 
+### List Simulation History
+
+```http
+GET /v1/simulations
+```
+
+Requires authentication (cookie session or API key) and enforces rate limiting. Retrieves a paginated history of simulation runs owned by the caller.
+
+**Query Parameters:**
+* `page` (integer, default: 1, min: 1): 1-indexed page number.
+* `page_size` (integer, default: 20, min: 1, max: 100): Number of items per page.
+* `preset` (string, optional): Filter by domain preset (`education`, `finance`, `healthcare`, `mobile_app`, or alias `mobile`). Invalid presets return `400 Bad Request`.
+* `status` (string, optional): Filter by simulation run status (`completed`, `failed`, `pending`). Invalid statuses return `400 Bad Request`.
+
+**Performance & Lightweight Projections**: The history listing returns run provenance and metadata only. The heavy interaction dataset (`data`) is omitted from list items to conserve network bandwidth and database I/O. Full datasets are retrieved via `GET /v1/simulations/{simulation_id}`.
+
+**Ownership Isolation**: All queries and `total` counts are strictly filtered by the authenticated user (`user_id = principal.user.id`). No cross-user metadata is accessible.
+
+**Response (HTTP 200 OK):**
+
+```json
+{
+  "items": [
+    {
+      "simulation_id": "2728f775-9874-4dad-8584-10b9b43eb8f4",
+      "preset": "education",
+      "num_interactions": 100,
+      "seed": 42,
+      "profile": "average",
+      "initial_state": "Optimal",
+      "status": "completed",
+      "compute_ms": 12,
+      "reproducible": true,
+      "behaviorsim_version": "1.0.1",
+      "api_version": "0.1.0",
+      "created_at": "2026-09-14T01:00:00Z",
+      "completed_at": "2026-09-14T01:00:01Z"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1,
+  "has_next": false
+}
+```
+
 ### Retrieve Simulation Run
 
 ```http
@@ -502,6 +548,7 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 7 Deployment Readiness Audit**: Complete API contract verification, `/v1/api-keys` HTTP routes (`GET`, `POST`, `DELETE`), OpenAPI 3.1 schema verification, and comprehensive 26-point production integration suite.
 * **Phase 8A Render Deployment Preparation**: Python runtime pinning (`.python-version` with 3.12.10), Render Blueprint specification (`render.yaml`), PostgreSQL connection string normalization (`postgres://` & `postgresql://`), clean lifespan engine disposal, and authoritative Render deployment runbook ([DEPLOYMENT.md](DEPLOYMENT.md)).
 * **Phase 11 Simulation Persistence & History**: Durable PostgreSQL simulation persistence (`simulations` table, Alembic revision `0004_add_simulations`), JSON/JSONB interaction storage, automatic quota refund on persistence failure, and secure retrieval endpoint (`GET /v1/simulations/{simulation_id}`) with strict ownership isolation (IDOR protection).
+* **Phase 12 Simulation History & Result Management**: Authenticated simulation history endpoint (`GET /v1/simulations`), bounded pagination (`page`, `page_size <= 100`), domain & status filtering, deterministic ordering (`created_at DESC, id DESC`), efficient metadata projection excluding large JSONB payloads, and strict caller-scoped ownership isolation.
 
 ## 14. Intentionally Deferred Capabilities
 

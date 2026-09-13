@@ -2,9 +2,9 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Path as FastPath, status
+from fastapi import APIRouter, Depends, Path as FastPath, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.auth import AuthenticatedPrincipal, get_current_principal
@@ -13,8 +13,15 @@ from app.core.errors import BehaviorSimAPIError
 from app.core.rate_limit import check_rate_limit
 from app.db.models.simulation import Simulation
 from app.db.session import get_db
-from app.services.simulation import execute_simulation, normalize_preset_name
+from app.services.simulation import (
+    PRESET_ALIASES,
+    SUPPORTED_PRESETS,
+    execute_simulation,
+    normalize_preset_name,
+)
 from app.services.usage import record_usage_result, refund_usage, reserve_usage
+
+ALLOWED_SIMULATION_STATUSES = {"completed", "failed", "pending"}
 
 logger = logging.getLogger("behaviorsim_api.api.v1.simulations")
 
@@ -100,6 +107,34 @@ class SimulationDetailResponse(BaseModel):
     metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
     created_at: datetime = Field(..., description="Timestamp when the simulation was created")
     completed_at: datetime = Field(..., description="Timestamp when the simulation completed")
+
+
+class SimulationHistoryItem(BaseModel):
+    """Lightweight simulation metadata item for history listings (excludes interaction data)."""
+
+    simulation_id: str = Field(..., description="Unique identifier for the simulation run")
+    preset: str = Field(..., description="Canonical preset name used for generation")
+    num_interactions: int = Field(..., description="Number of interactions generated")
+    seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
+    profile: Optional[str] = Field(None, description="Domain persona/cohort profile name used")
+    initial_state: Optional[str] = Field(None, description="Initial behavioral state used")
+    status: str = Field(..., description="Simulation execution status (e.g. 'completed')")
+    compute_ms: int = Field(..., description="Total simulation compute time in milliseconds")
+    reproducible: bool = Field(..., description="True if an explicit seed was supplied guaranteeing reproducibility")
+    behaviorsim_version: str = Field(..., description="Version of the core behaviorsim package used")
+    api_version: str = Field(..., description="Semantic version of BehaviorSim API")
+    created_at: datetime = Field(..., description="Timestamp when the simulation was created")
+    completed_at: datetime = Field(..., description="Timestamp when the simulation completed")
+
+
+class SimulationHistoryResponse(BaseModel):
+    """Bounded paginated simulation history response."""
+
+    items: List[SimulationHistoryItem] = Field(..., description="List of simulation run metadata items")
+    page: int = Field(..., description="Current page number (1-indexed)")
+    page_size: int = Field(..., description="Maximum items per page")
+    total: int = Field(..., description="Total number of simulations matching filters for caller")
+    has_next: bool = Field(..., description="True if subsequent pages exist")
 
 
 @router.post(
@@ -274,6 +309,114 @@ def run_simulation(
             compute_ms=compute_ms,
             reproducible=(request.seed is not None),
         ),
+    )
+
+
+@router.get(
+    "",
+    response_model=SimulationHistoryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List simulation history",
+    description="List historical simulation runs owned by the authenticated caller with pagination and bounded filtering.",
+    dependencies=[Depends(check_rate_limit)],
+)
+def list_simulations(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page (max 100)"),
+    preset: Optional[str] = Query(None, min_length=1, max_length=50, description="Optional filter by preset domain"),
+    status_filter: Optional[str] = Query(
+        None,
+        alias="status",
+        min_length=1,
+        max_length=20,
+        description="Optional filter by simulation status",
+    ),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+) -> SimulationHistoryResponse:
+    """Retrieve paginated simulation history for the current authenticated user."""
+    # 1. Base ownership filter (strict caller scoping)
+    clauses = [Simulation.user_id == principal.user.id]
+
+    # 2. Preset filter validation & normalization
+    if preset is not None:
+        normalized_preset = normalize_preset_name(preset)
+        if normalized_preset not in SUPPORTED_PRESETS:
+            allowed = sorted(list(SUPPORTED_PRESETS.keys()) + list(PRESET_ALIASES.keys()))
+            raise BehaviorSimAPIError(
+                message=f"Preset '{preset}' is not recognized. Supported presets: {allowed}",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                details={"code": "invalid_preset", "allowed_presets": allowed},
+            )
+        clauses.append(Simulation.preset == normalized_preset)
+
+    # 3. Status filter validation
+    if status_filter is not None:
+        cleaned_status = status_filter.strip().lower()
+        if cleaned_status not in ALLOWED_SIMULATION_STATUSES:
+            allowed_statuses = sorted(list(ALLOWED_SIMULATION_STATUSES))
+            raise BehaviorSimAPIError(
+                message=f"Status '{status_filter}' is not recognized. Allowed statuses: {allowed_statuses}",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                details={"code": "invalid_status", "allowed_statuses": allowed_statuses},
+            )
+        clauses.append(Simulation.status == cleaned_status)
+
+    # 4. Total count query
+    count_stmt = select(func.count(Simulation.id)).where(*clauses)
+    total = db.execute(count_stmt).scalar() or 0
+
+    # 5. Metadata projection query (excluding heavy JSONB data)
+    stmt = (
+        select(
+            Simulation.id,
+            Simulation.preset,
+            Simulation.num_interactions,
+            Simulation.seed,
+            Simulation.profile,
+            Simulation.initial_state,
+            Simulation.status,
+            Simulation.compute_ms,
+            Simulation.reproducible,
+            Simulation.behaviorsim_version,
+            Simulation.api_version,
+            Simulation.created_at,
+            Simulation.completed_at,
+        )
+        .where(*clauses)
+        .order_by(Simulation.created_at.desc(), Simulation.id.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = db.execute(stmt).all()
+
+    items = [
+        SimulationHistoryItem(
+            simulation_id=str(row.id),
+            preset=row.preset,
+            num_interactions=row.num_interactions,
+            seed=row.seed,
+            profile=row.profile,
+            initial_state=row.initial_state,
+            status=row.status,
+            compute_ms=row.compute_ms,
+            reproducible=row.reproducible,
+            behaviorsim_version=row.behaviorsim_version,
+            api_version=row.api_version,
+            created_at=row.created_at,
+            completed_at=row.completed_at,
+        )
+        for row in rows
+    ]
+
+    has_next = (page * page_size) < total
+
+    return SimulationHistoryResponse(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        has_next=has_next,
     )
 
 

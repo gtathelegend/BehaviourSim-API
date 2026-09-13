@@ -468,6 +468,20 @@ Requires authentication (cookie session or API key). Retrieves the complete stor
 }
 ```
 
+### Delete Simulation Run
+
+```http
+DELETE /v1/simulations/{simulation_id}
+```
+
+Requires authentication (cookie session or API key) and enforces rate limiting. Permanently deletes a simulation run owned by the caller.
+
+**Status Code**: `HTTP 204 No Content` on successful permanent deletion.
+
+**Security & IDOR Protection**: A caller can only delete simulations they own. If the simulation does not exist or belongs to another user, a uniform `404 Not Found` error envelope is returned to prevent identifier enumeration.
+
+**Quota Policy**: Deleting a persisted simulation run does **not** refund consumed monthly simulation quota or interactions, as the computational generation has already occurred.
+
 ### Python Client Example
 
 ```python
@@ -549,6 +563,7 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 8A Render Deployment Preparation**: Python runtime pinning (`.python-version` with 3.12.10), Render Blueprint specification (`render.yaml`), PostgreSQL connection string normalization (`postgres://` & `postgresql://`), clean lifespan engine disposal, and authoritative Render deployment runbook ([DEPLOYMENT.md](DEPLOYMENT.md)).
 * **Phase 11 Simulation Persistence & History**: Durable PostgreSQL simulation persistence (`simulations` table, Alembic revision `0004_add_simulations`), JSON/JSONB interaction storage, automatic quota refund on persistence failure, and secure retrieval endpoint (`GET /v1/simulations/{simulation_id}`) with strict ownership isolation (IDOR protection).
 * **Phase 12 Simulation History & Result Management**: Authenticated simulation history endpoint (`GET /v1/simulations`), bounded pagination (`page`, `page_size <= 100`), domain & status filtering, deterministic ordering (`created_at DESC, id DESC`), efficient metadata projection excluding large JSONB payloads, and strict caller-scoped ownership isolation.
+* **Phase 13 Simulation Deletion & Data Lifecycle Foundation**: Authenticated permanent deletion endpoint (`DELETE /v1/simulations/{simulation_id}`), HTTP 204 No Content response, strict caller-scoped ownership isolation (IDOR protection), immediate removal from history and detail endpoints, and preserved quota accounting (no quota refunds on delete).
 
 ## 14. Intentionally Deferred Capabilities
 

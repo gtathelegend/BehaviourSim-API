@@ -950,3 +950,271 @@ def test_simulation_detail_regression_with_history(client: TestClient, db_sessio
     assert data["simulation_id"] == str(sim.id)
     assert data["data"] == [{"row": 1}, {"row": 2}]
     assert data["preset"] == "education"
+
+
+# ============================================================================
+# 9. Phase 13 Simulation Deletion Tests (DELETE /v1/simulations/{id})
+# ============================================================================
+
+def test_delete_simulation_unauthenticated(client: TestClient):
+    """Verify unauthenticated DELETE /v1/simulations/{id} returns HTTP 401."""
+    random_id = str(uuid.uuid4())
+    resp = client.delete(f"/v1/simulations/{random_id}")
+    assert resp.status_code == 401
+
+
+def test_delete_simulation_owner(client: TestClient, db_session: Session):
+    """Verify owner can permanently delete simulation run with 204 response."""
+    user = User(email="del_owner_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Del Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=10,
+        status="completed",
+        data=[{"x": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add(sim)
+    db_session.commit()
+    sim_id = str(sim.id)
+
+    # Delete simulation
+    resp = client.delete(f"/v1/simulations/{sim_id}", headers=headers)
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+    # Confirm record is gone from DB
+    db_session.expire_all()
+    deleted = db_session.query(Simulation).filter_by(id=uuid.UUID(sim_id)).first()
+    assert deleted is None
+
+    # Confirm detail endpoint returns 404
+    r_detail = client.get(f"/v1/simulations/{sim_id}", headers=headers)
+    assert r_detail.status_code == 404
+    assert r_detail.json()["error"]["details"]["code"] == "simulation_not_found"
+
+    # Confirm history endpoint excludes it
+    r_hist = client.get("/v1/simulations", headers=headers)
+    assert r_hist.status_code == 200
+    assert r_hist.json()["total"] == 0
+    assert r_hist.json()["items"] == []
+
+
+def test_delete_simulation_ownership_isolation(client: TestClient, db_session: Session):
+    """Verify User B cannot delete User A's simulation (returns 404; User A's data intact)."""
+    user_a = User(email="del_user_a@example.com")
+    user_b = User(email="del_user_b@example.com")
+    db_session.add_all([user_a, user_b])
+    db_session.commit()
+
+    key_a = create_api_key(db_session, user_a, name="Key A")
+    key_b = create_api_key(db_session, user_b, name="Key B")
+
+    sim_a = Simulation(
+        user_id=user_a.id,
+        preset="education",
+        num_interactions=10,
+        status="completed",
+        data=[{"secret": "user_a_data"}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add(sim_a)
+    db_session.commit()
+    sim_a_id = str(sim_a.id)
+
+    # User B attempts to delete User A's simulation
+    resp_b = client.delete(
+        f"/v1/simulations/{sim_a_id}",
+        headers={"Authorization": f"Bearer {key_b.key}"},
+    )
+    assert resp_b.status_code == 404
+    assert resp_b.json()["error"]["details"]["code"] == "simulation_not_found"
+
+    # Verify simulation A is still intact in DB and retrievable by User A
+    db_session.expire_all()
+    intact = db_session.query(Simulation).filter_by(id=uuid.UUID(sim_a_id)).first()
+    assert intact is not None
+
+    resp_a = client.get(
+        f"/v1/simulations/{sim_a_id}",
+        headers={"Authorization": f"Bearer {key_a.key}"},
+    )
+    assert resp_a.status_code == 200
+    assert resp_a.json()["simulation_id"] == sim_a_id
+
+
+def test_delete_simulation_not_found(client: TestClient, db_session: Session):
+    """Verify deleting a nonexistent UUID returns HTTP 404."""
+    user = User(email="del_notfound_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    random_id = str(uuid.uuid4())
+    resp = client.delete(f"/v1/simulations/{random_id}", headers=headers)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["details"]["code"] == "simulation_not_found"
+
+
+def test_delete_simulation_malformed_id(client: TestClient, db_session: Session):
+    """Verify deleting a malformed non-UUID string returns HTTP 404."""
+    user = User(email="del_malformed_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    resp = client.delete("/v1/simulations/not-a-valid-uuid", headers=headers)
+    assert resp.status_code == 404
+    assert resp.json()["error"]["details"]["code"] == "simulation_not_found"
+
+
+def test_delete_simulation_already_deleted(client: TestClient, db_session: Session):
+    """Verify repeated deletion of the same ID returns 404 on the second call."""
+    user = User(email="del_repeat_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=5,
+        status="completed",
+        data=[{"a": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add(sim)
+    db_session.commit()
+    sim_id = str(sim.id)
+
+    # First deletion -> 204
+    r1 = client.delete(f"/v1/simulations/{sim_id}", headers=headers)
+    assert r1.status_code == 204
+
+    # Second deletion -> 404
+    r2 = client.delete(f"/v1/simulations/{sim_id}", headers=headers)
+    assert r2.status_code == 404
+    assert r2.json()["error"]["details"]["code"] == "simulation_not_found"
+
+
+def test_delete_simulation_does_not_refund_quota(client: TestClient, db_session: Session):
+    """Verify deleting a simulation does NOT decrement or refund monthly quota."""
+    user = User(email="del_norefund_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # Execute simulation via POST
+    post_resp = client.post(
+        "/v1/simulations",
+        headers=headers,
+        json={"preset": "education", "num_interactions": 15},
+    )
+    assert post_resp.status_code == 200
+    sim_id = post_resp.json()["simulation_id"]
+
+    # Verify usage was recorded
+    period_start = get_current_period_start()
+    db_session.expire_all()
+    usage = db_session.query(MonthlyUsage).filter_by(user_id=user.id, period_start=period_start).first()
+    assert usage is not None
+    assert usage.request_count == 1
+    assert usage.interaction_count == 15
+
+    # Delete the simulation
+    del_resp = client.delete(f"/v1/simulations/{sim_id}", headers=headers)
+    assert del_resp.status_code == 204
+
+    # Verify usage counters remain strictly unchanged
+    db_session.expire_all()
+    usage_after = db_session.query(MonthlyUsage).filter_by(user_id=user.id, period_start=period_start).first()
+    assert usage_after is not None
+    assert usage_after.request_count == 1
+    assert usage_after.interaction_count == 15
+
+
+def test_delete_simulation_multi_sim_integrity(client: TestClient, db_session: Session):
+    """Verify deleting 1 of 3 simulations leaves other simulations, totals, and ordering intact."""
+    user = User(email="del_multi_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    sim1 = Simulation(
+        user_id=user.id,
+        preset="education",
+        num_interactions=10,
+        status="completed",
+        data=[{"sim": 1}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim2 = Simulation(
+        user_id=user.id,
+        preset="finance",
+        num_interactions=20,
+        status="completed",
+        data=[{"sim": 2}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    sim3 = Simulation(
+        user_id=user.id,
+        preset="healthcare",
+        num_interactions=30,
+        status="completed",
+        data=[{"sim": 3}],
+        behaviorsim_version="1.0.1",
+        api_version="0.1.0",
+        compute_ms=10,
+        reproducible=False,
+    )
+    db_session.add_all([sim1, sim2, sim3])
+    db_session.commit()
+
+    # Pre-check: 3 items in history
+    r_init = client.get("/v1/simulations", headers=headers)
+    assert r_init.status_code == 200
+    assert r_init.json()["total"] == 3
+
+    # Delete middle simulation (sim2)
+    r_del = client.delete(f"/v1/simulations/{sim2.id}", headers=headers)
+    assert r_del.status_code == 204
+
+    # History now has total=2, items contain sim3 and sim1, sim2 is gone
+    r_post = client.get("/v1/simulations", headers=headers)
+    assert r_post.status_code == 200
+    post_data = r_post.json()
+    assert post_data["total"] == 2
+    post_ids = [item["simulation_id"] for item in post_data["items"]]
+    assert str(sim2.id) not in post_ids
+    assert str(sim1.id) in post_ids
+    assert str(sim3.id) in post_ids
+
+    # Detail checks
+    assert client.get(f"/v1/simulations/{sim2.id}", headers=headers).status_code == 404
+    assert client.get(f"/v1/simulations/{sim1.id}", headers=headers).status_code == 200
+    assert client.get(f"/v1/simulations/{sim3.id}", headers=headers).status_code == 200

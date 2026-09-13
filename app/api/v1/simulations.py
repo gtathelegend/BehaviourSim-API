@@ -2,7 +2,7 @@ import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Path as FastPath, Query, status
+from fastapi import APIRouter, Depends, Path as FastPath, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -475,3 +475,47 @@ def get_simulation(
         created_at=sim.created_at,
         completed_at=sim.completed_at,
     )
+
+
+@router.delete(
+    "/{simulation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete persisted simulation run",
+    description="Permanently delete a simulation run owned by the authenticated caller.",
+    dependencies=[Depends(check_rate_limit)],
+)
+def delete_simulation(
+    simulation_id: str = FastPath(..., description="UUID of the simulation run to delete"),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Permanently delete a persisted simulation run with strict owner-level IDOR enforcement."""
+    # 1. Validate UUID format
+    try:
+        sim_uuid = uuid.UUID(simulation_id)
+    except (ValueError, TypeError):
+        raise BehaviorSimAPIError(
+            message=f"Simulation '{simulation_id}' not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"code": "simulation_not_found"},
+        )
+
+    # 2. Query simulation strictly matching both simulation.id AND owner user_id
+    stmt = select(Simulation).where(
+        Simulation.id == sim_uuid,
+        Simulation.user_id == principal.user.id,
+    )
+    sim = db.execute(stmt).scalar_one_or_none()
+
+    if sim is None:
+        raise BehaviorSimAPIError(
+            message=f"Simulation '{simulation_id}' not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"code": "simulation_not_found"},
+        )
+
+    # 3. Permanent hard delete (without modifying quota)
+    db.delete(sim)
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

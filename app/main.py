@@ -12,7 +12,11 @@ from app.api.v1.router import api_v1_router
 from app.core.config import get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import setup_logging
-from app.core.middleware import CorrelationIdMiddleware, SecurityHeadersMiddleware
+from app.core.middleware import (
+    CorrelationIdMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 logger = logging.getLogger("behaviorsim_api")
 
@@ -65,8 +69,9 @@ def create_app() -> FastAPI:
     )
 
     # Operational & Security Middlewares
-    application.add_middleware(CorrelationIdMiddleware)
+    application.add_middleware(RequestBodyLimitMiddleware, max_bytes=1_048_576)
     application.add_middleware(SecurityHeadersMiddleware, is_production=settings.is_production)
+    application.add_middleware(CorrelationIdMiddleware)
 
     # Production-safe CORS configuration
     cors_origins = settings.CORS_ORIGINS

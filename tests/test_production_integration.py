@@ -188,9 +188,11 @@ def test_production_lifecycle_all_26_invariants(prod_client, db_session):
     assert usage_init.json()["usage"]["interactions"] == 0
 
     # Rate limiting verification (5 requests/minute on Free plan)
-    # Endpoints enforcing check_rate_limit are /v1/usage and /v1/simulations.
-    # Make 4 more requests to /v1/usage (reaching total 5)
-    for _ in range(4):
+    from app.core.rate_limit import default_rate_limiter
+    default_rate_limiter.reset()
+
+    # Make 5 requests to /v1/usage (reaching total 5)
+    for _ in range(5):
         resp = prod_client.get("/v1/usage", headers=api_auth_headers)
         assert resp.status_code == 200
 

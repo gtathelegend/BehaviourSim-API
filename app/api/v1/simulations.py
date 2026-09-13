@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import AuthenticatedPrincipal, get_current_principal
 from app.core.config import get_settings
+from app.core.concurrency import default_concurrency_limiter
 from app.core.errors import BehaviorSimAPIError
 from app.core.rate_limit import check_rate_limit
 from app.db.models.simulation import Simulation
@@ -179,137 +180,158 @@ def run_simulation(
 
     api_key_id = principal.api_key.id if principal.api_key else None
 
-    # 2. Atomically reserve quota (raises 429 quota_exceeded if exhausted)
-    reserve_usage(
-        db=db,
-        user=user,
-        requested_interactions=request.num_interactions,
-        delta_requests=1,
-        api_key_id=api_key_id,
-    )
-
-    # 3. Execute BehaviorSim simulation via service adapter
-    try:
-        simulation_id_str, records, compute_ms = execute_simulation(
-            preset=request.preset,
-            num_interactions=request.num_interactions,
-            seed=request.seed,
-            profile=request.profile,
-            initial_state=request.initial_state,
-        )
-    except BehaviorSimAPIError:
-        refund_usage(
-            db=db,
-            user=user,
-            requested_interactions=request.num_interactions,
-            delta_requests=1,
-        )
-        record_usage_result(
-            db=db,
-            user=user,
-            event_type="simulation_failed",
-            success=False,
-            interaction_count=0,
-            compute_ms=0,
-            api_key_id=api_key_id,
-        )
-        raise
-    except Exception as exc:
-        # Refund reserved quota on unexpected internal generation failure
-        refund_usage(
-            db=db,
-            user=user,
-            requested_interactions=request.num_interactions,
-            delta_requests=1,
-        )
-        record_usage_result(
-            db=db,
-            user=user,
-            event_type="simulation_failed",
-            success=False,
-            interaction_count=0,
-            compute_ms=0,
-            api_key_id=api_key_id,
+    # 2. Enforce plan-specific concurrent simulation limit
+    max_concurrent = plan.max_concurrent_simulations if plan.max_concurrent_simulations else 1
+    if not default_concurrency_limiter.acquire(user.id, max_concurrent):
+        logger.warning(
+            "Concurrent simulation limit reached: user_id=%s limit=%s",
+            user.id,
+            max_concurrent,
         )
         raise BehaviorSimAPIError(
-            message="Internal simulation generation failed. Please try again or contact support.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details={"code": "simulation_generation_failed"},
-        ) from exc
+            message=f"Concurrent simulation limit exceeded. Your plan allows {max_concurrent} concurrent simulation.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            details={
+                "code": "concurrent_simulation_limit_exceeded",
+                "limit": max_concurrent,
+            },
+            headers={"Retry-After": "5"},
+        )
 
-    canonical_preset = normalize_preset_name(request.preset)
-    sim_uuid = uuid.UUID(simulation_id_str)
-    settings = get_settings()
-    user_id = user.id
-
-    # 4. Persist simulation record and bounded results in database
     try:
-        sim_record = Simulation(
-            id=sim_uuid,
-            user_id=user_id,
+        # 3. Atomically reserve quota (raises 429 quota_exceeded if exhausted)
+        reserve_usage(
+            db=db,
+            user=user,
+            requested_interactions=request.num_interactions,
+            delta_requests=1,
+            api_key_id=api_key_id,
+        )
+
+        # 4. Execute BehaviorSim simulation via service adapter
+        try:
+            simulation_id_str, records, compute_ms = execute_simulation(
+                preset=request.preset,
+                num_interactions=request.num_interactions,
+                seed=request.seed,
+                profile=request.profile,
+                initial_state=request.initial_state,
+            )
+        except BehaviorSimAPIError:
+            refund_usage(
+                db=db,
+                user=user,
+                requested_interactions=request.num_interactions,
+                delta_requests=1,
+            )
+            record_usage_result(
+                db=db,
+                user=user,
+                event_type="simulation_failed",
+                success=False,
+                interaction_count=0,
+                compute_ms=0,
+                api_key_id=api_key_id,
+            )
+            raise
+        except Exception as exc:
+            # Refund reserved quota on unexpected internal generation failure
+            refund_usage(
+                db=db,
+                user=user,
+                requested_interactions=request.num_interactions,
+                delta_requests=1,
+            )
+            record_usage_result(
+                db=db,
+                user=user,
+                event_type="simulation_failed",
+                success=False,
+                interaction_count=0,
+                compute_ms=0,
+                api_key_id=api_key_id,
+            )
+            raise BehaviorSimAPIError(
+                message="Internal simulation generation failed. Please try again or contact support.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"code": "simulation_generation_failed"},
+            ) from exc
+
+        canonical_preset = normalize_preset_name(request.preset)
+        sim_uuid = uuid.UUID(simulation_id_str)
+        settings = get_settings()
+        user_id = user.id
+
+        # 5. Persist simulation record and bounded results in database
+        try:
+            sim_record = Simulation(
+                id=sim_uuid,
+                user_id=user_id,
+                preset=canonical_preset,
+                num_interactions=len(records),
+                seed=request.seed,
+                profile=request.profile,
+                initial_state=request.initial_state,
+                status="completed",
+                result_storage="database",
+                data=records,
+                behaviorsim_version="1.0.1",
+                api_version=settings.API_VERSION,
+                compute_ms=compute_ms,
+                reproducible=(request.seed is not None),
+            )
+            db.add(sim_record)
+            db.commit()
+        except Exception as exc:
+            logger.error("Failed to persist simulation record: %s", exc, exc_info=True)
+            # Refund quota on persistence failure to guarantee consistency
+            refund_usage(
+                db=db,
+                user=user,
+                requested_interactions=request.num_interactions,
+                delta_requests=1,
+            )
+            record_usage_result(
+                db=db,
+                user=user,
+                event_type="simulation_failed",
+                success=False,
+                interaction_count=0,
+                compute_ms=0,
+                api_key_id=api_key_id,
+            )
+            raise BehaviorSimAPIError(
+                message="Failed to persist simulation run. Quota has been refunded.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"code": "simulation_persistence_failed"},
+            ) from exc
+
+        # 6. Record successful usage completion event
+        record_usage_result(
+            db=db,
+            user=user,
+            event_type="simulation_completed",
+            success=True,
+            interaction_count=request.num_interactions,
+            compute_ms=compute_ms,
+            api_key_id=api_key_id,
+        )
+
+        return SimulationResponse(
+            simulation_id=simulation_id_str,
             preset=canonical_preset,
             num_interactions=len(records),
             seed=request.seed,
-            profile=request.profile,
-            initial_state=request.initial_state,
-            status="completed",
-            result_storage="database",
             data=records,
-            behaviorsim_version="1.0.1",
-            api_version=settings.API_VERSION,
-            compute_ms=compute_ms,
-            reproducible=(request.seed is not None),
+            metadata=SimulationMetadata(
+                behaviorsim_version="1.0.1",
+                api_version=settings.API_VERSION,
+                compute_ms=compute_ms,
+                reproducible=(request.seed is not None),
+            ),
         )
-        db.add(sim_record)
-        db.commit()
-    except Exception as exc:
-        logger.error("Failed to persist simulation record: %s", exc, exc_info=True)
-        # Refund quota on persistence failure to guarantee consistency
-        refund_usage(
-            db=db,
-            user=user,
-            requested_interactions=request.num_interactions,
-            delta_requests=1,
-        )
-        record_usage_result(
-            db=db,
-            user=user,
-            event_type="simulation_failed",
-            success=False,
-            interaction_count=0,
-            compute_ms=0,
-            api_key_id=api_key_id,
-        )
-        raise BehaviorSimAPIError(
-            message="Failed to persist simulation run. Quota has been refunded.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details={"code": "simulation_persistence_failed"},
-        ) from exc
-
-    # 5. Record successful usage completion event
-    record_usage_result(
-        db=db,
-        user=user,
-        event_type="simulation_completed",
-        success=True,
-        interaction_count=request.num_interactions,
-        compute_ms=compute_ms,
-        api_key_id=api_key_id,
-    )
-
-    return SimulationResponse(
-        simulation_id=simulation_id_str,
-        preset=canonical_preset,
-        num_interactions=len(records),
-        seed=request.seed,
-        data=records,
-        metadata=SimulationMetadata(
-            behaviorsim_version="1.0.1",
-            api_version=settings.API_VERSION,
-            compute_ms=compute_ms,
-            reproducible=(request.seed is not None),
-        ),
-    )
+    finally:
+        default_concurrency_limiter.release(user.id)
 
 
 @router.get(

@@ -1,6 +1,5 @@
-"""API key lifecycle service managing creation, listing, revocation, and validation."""
-
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -17,6 +16,8 @@ from app.db.models.api_key import APIKey
 from app.db.models.user import User
 
 logger = logging.getLogger("behaviorsim_api.services.api_key")
+
+_api_key_lock = threading.Lock()
 
 
 class APIKeyCreateResult(BaseModel):
@@ -35,57 +36,63 @@ def create_api_key(db: Session, user: User, name: str) -> APIKeyCreateResult:
     The raw key string is returned exactly once in the result object and is never persisted.
     Enforces the user's plan max_api_keys limit.
     """
-    if user.plan:
-        active_count = db.scalars(
-            select(func.count(APIKey.id)).where(
-                APIKey.user_id == user.id,
-                APIKey.is_active.is_(True),
-            )
-        ).first() or 0
+    with _api_key_lock:
+        if user.plan:
+            # Acquire row-level lock on user to serialize concurrent key creations across workers
+            db.scalars(
+                select(User.id).where(User.id == user.id).with_for_update()
+            ).first()
 
-        if active_count >= user.plan.max_api_keys:
-            logger.warning(
-                "API key limit reached for user_id=%s on plan '%s' (%s/%s)",
-                user.id,
-                user.plan.name,
-                active_count,
-                user.plan.max_api_keys,
-            )
-            raise BehaviorSimAPIError(
-                message=f"Active API key limit reached for plan '{user.plan.name}'. Maximum allowed: {user.plan.max_api_keys}.",
-                status_code=403,
-                details={
-                    "code": "plan_limit_exceeded",
-                    "resource": "api_keys",
-                    "max_allowed": user.plan.max_api_keys,
-                    "current": active_count,
-                },
-            )
+            active_count = db.scalars(
+                select(func.count(APIKey.id)).where(
+                    APIKey.user_id == user.id,
+                    APIKey.is_active.is_(True),
+                )
+            ).first() or 0
 
-    settings = get_settings()
-    raw_key, key_prefix, key_hash = generate_api_key(prefix=settings.API_KEY_PREFIX)
+            if active_count >= user.plan.max_api_keys:
+                logger.warning(
+                    "API key limit reached for user_id=%s on plan '%s' (%s/%s)",
+                    user.id,
+                    user.plan.name,
+                    active_count,
+                    user.plan.max_api_keys,
+                )
+                raise BehaviorSimAPIError(
+                    message=f"Active API key limit reached for plan '{user.plan.name}'. Maximum allowed: {user.plan.max_api_keys}.",
+                    status_code=403,
+                    details={
+                        "code": "plan_limit_exceeded",
+                        "resource": "api_keys",
+                        "max_allowed": user.plan.max_api_keys,
+                        "current": active_count,
+                    },
+                )
 
-    api_key = APIKey(
-        id=uuid.uuid4(),
-        user_id=user.id,
-        name=name,
-        key_prefix=key_prefix,
-        key_hash=key_hash,
-        is_active=True,
-    )
-    db.add(api_key)
-    db.commit()
-    db.refresh(api_key)
+        settings = get_settings()
+        raw_key, key_prefix, key_hash = generate_api_key(prefix=settings.API_KEY_PREFIX)
 
-    logger.info("Created API key id=%s prefix=%s for user_id=%s", api_key.id, key_prefix, user.id)
+        api_key = APIKey(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            name=name,
+            key_prefix=key_prefix,
+            key_hash=key_hash,
+            is_active=True,
+        )
+        db.add(api_key)
+        db.commit()
+        db.refresh(api_key)
 
-    return APIKeyCreateResult(
-        id=api_key.id,
-        name=api_key.name,
-        key=raw_key,
-        key_prefix=api_key.key_prefix,
-        created_at=api_key.created_at,
-    )
+        logger.info("Created API key id=%s prefix=%s for user_id=%s", api_key.id, key_prefix, user.id)
+
+        return APIKeyCreateResult(
+            id=api_key.id,
+            name=api_key.name,
+            key=raw_key,
+            key_prefix=api_key.key_prefix,
+            created_at=api_key.created_at,
+        )
 
 
 def list_api_keys(db: Session, user: User) -> List[APIKey]:

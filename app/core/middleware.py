@@ -6,7 +6,7 @@ import uuid
 from typing import Optional
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 # Context variable for request correlation ID
 request_id_ctx_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
@@ -56,3 +56,35 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if self.is_production:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
+
+
+class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
+    """Middleware enforcing a maximum request body size ceiling (default 1MB)."""
+
+    def __init__(self, app, max_bytes: int = 1_048_576) -> None:
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.max_bytes:
+                    request_id = getattr(request.state, "request_id", "") or get_current_request_id()
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "message": f"Request body exceeds maximum allowed size of {self.max_bytes} bytes.",
+                                "status_code": 413,
+                                "details": {
+                                    "code": "payload_too_large",
+                                },
+                                "request_id": request_id,
+                            }
+                        },
+                        headers={"X-Request-ID": request_id} if request_id else {},
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)

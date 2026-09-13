@@ -43,12 +43,24 @@ class InMemoryRateLimiter(RateLimiter):
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: Dict[str, List[float]] = {}
+        self._sweep_counter: int = 0
 
     def check_rate_limit(self, key: str, limit: int, window_seconds: int = 60) -> Tuple[bool, int]:
         now = time.time()
         window_start = now - window_seconds
 
         with self._lock:
+            # Opportunistic sweep of expired keys periodically
+            self._sweep_counter += 1
+            if self._sweep_counter >= 100:
+                self._sweep_counter = 0
+                dead_keys = [
+                    k for k, timestamps in self._records.items()
+                    if not timestamps or timestamps[-1] <= window_start
+                ]
+                for k in dead_keys:
+                    self._records.pop(k, None)
+
             timestamps = self._records.get(key, [])
             # Evict timestamps outside the current window
             valid_timestamps = [ts for ts in timestamps if ts > window_start]
@@ -63,9 +75,23 @@ class InMemoryRateLimiter(RateLimiter):
             self._records[key] = valid_timestamps
             return True, 0
 
+    def prune_expired(self, window_seconds: int = 60) -> int:
+        """Prune keys whose timestamps are all older than window_seconds."""
+        now = time.time()
+        window_start = now - window_seconds
+        with self._lock:
+            dead_keys = [
+                k for k, timestamps in self._records.items()
+                if not timestamps or timestamps[-1] <= window_start
+            ]
+            for k in dead_keys:
+                self._records.pop(k, None)
+            return len(dead_keys)
+
     def reset(self) -> None:
         with self._lock:
             self._records.clear()
+            self._sweep_counter = 0
 
 
 # Default singleton rate limiter instance

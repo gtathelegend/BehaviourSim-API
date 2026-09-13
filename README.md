@@ -550,6 +550,14 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * Fails startup if OAuth client IDs or secrets are missing.
 * Fails startup if using an insecure SQLite file or memory database in production.
 
+### Resource Protection & Concurrency Hardening (Phase 14)
+
+* **Concurrency Limiting**: Thread-safe in-memory `ConcurrencyLimiter` enforces `plan.max_concurrent_simulations` per user on `POST /v1/simulations`. Excess requests receive `HTTP 429 Too Many Requests` (`code: concurrent_simulation_limit_exceeded`) with `Retry-After: 5`. Guaranteed slot release in `finally` blocks prevents slot leaks during execution or persistence failures.
+* **API Key Race Serialization**: `create_api_key` acquires an exclusive row lock (`SELECT ... FOR UPDATE`) on the user record alongside process-local locking, serializing concurrent key generation and preventing race conditions from bypassing plan caps (`max_api_keys`).
+* **Payload Size Ceiling**: `RequestBodyLimitMiddleware` enforces a strict 1 MB maximum payload ceiling across all incoming requests, rejecting oversized payloads with `HTTP 413` (`code: payload_too_large`) and returning standard JSON error envelopes with `X-Request-ID`.
+* **Rate Limiter Memory Hygiene**: `InMemoryRateLimiter` automatically sweeps and prunes expired keys during checks and provides `prune_expired` methods to avoid memory leaks from short-lived callers.
+* **Management Endpoint Protection**: Plan-based rate limiting (`check_rate_limit`) is enforced across `/v1/api-keys` routes in addition to `/v1/simulations` and `/v1/usage`.
+
 ## 13. What is Implemented
 
 * **Phase 0 Foundation**: FastAPI application factory, logging, settings, `/health` endpoint, `behaviorsim==1.0.1` startup check.
@@ -564,6 +572,7 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 11 Simulation Persistence & History**: Durable PostgreSQL simulation persistence (`simulations` table, Alembic revision `0004_add_simulations`), JSON/JSONB interaction storage, automatic quota refund on persistence failure, and secure retrieval endpoint (`GET /v1/simulations/{simulation_id}`) with strict ownership isolation (IDOR protection).
 * **Phase 12 Simulation History & Result Management**: Authenticated simulation history endpoint (`GET /v1/simulations`), bounded pagination (`page`, `page_size <= 100`), domain & status filtering, deterministic ordering (`created_at DESC, id DESC`), efficient metadata projection excluding large JSONB payloads, and strict caller-scoped ownership isolation.
 * **Phase 13 Simulation Deletion & Data Lifecycle Foundation**: Authenticated permanent deletion endpoint (`DELETE /v1/simulations/{simulation_id}`), HTTP 204 No Content response, strict caller-scoped ownership isolation (IDOR protection), immediate removal from history and detail endpoints, and preserved quota accounting (no quota refunds on delete).
+* **Phase 14 Reliability, Resource Protection & Concurrency Hardening**: In-memory plan-scoped concurrent simulation limiter, PostgreSQL `with_for_update` row-level API key race serialization, 1 MB request body ceiling middleware (`HTTP 413`), rate limiter memory hygiene/pruning, and rate limiting coverage for API key management routes.
 
 ## 14. Intentionally Deferred Capabilities
 

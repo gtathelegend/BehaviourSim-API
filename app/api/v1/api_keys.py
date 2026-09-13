@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.auth import AuthenticatedPrincipal, get_current_principal
+from app.core.rate_limit import check_rate_limit
 from app.db.session import get_db
 from app.services.api_key import (
     APIKeyCreateResult,
@@ -17,7 +18,11 @@ from app.services.api_key import (
     revoke_api_key,
 )
 
-router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+router = APIRouter(
+    prefix="/api-keys",
+    tags=["api-keys"],
+    dependencies=[Depends(check_rate_limit)],
+)
 
 
 class APIKeyMetadataResponse(BaseModel):

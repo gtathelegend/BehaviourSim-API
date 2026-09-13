@@ -58,8 +58,9 @@ class Simulation(Base):
     )
     status: Mapped[str] = mapped_column(
         String(20),
-        default="completed",
+        default="pending",
         nullable=False,
+        index=True,
     )
     result_storage: Mapped[str] = mapped_column(
         String(20),
@@ -71,9 +72,9 @@ class Simulation(Base):
         nullable=True,
     )
     # Uses JSON type which maps to native JSONB on PostgreSQL and JSON/TEXT on SQLite
-    data: Mapped[List[Dict[str, Any]]] = mapped_column(
+    data: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"),
-        nullable=False,
+        nullable=True,
     )
     behaviorsim_version: Mapped[str] = mapped_column(
         String(20),
@@ -83,14 +84,22 @@ class Simulation(Base):
         String(20),
         nullable=False,
     )
-    compute_ms: Mapped[int] = mapped_column(
+    compute_ms: Mapped[Optional[int]] = mapped_column(
         Integer,
-        nullable=False,
+        nullable=True,
     )
     reproducible: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
+    )
+    error_code: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -98,9 +107,18 @@ class Simulation(Base):
         nullable=False,
         index=True,
     )
-    completed_at: Mapped[datetime] = mapped_column(
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
+        onupdate=utc_now,
         nullable=False,
     )
 

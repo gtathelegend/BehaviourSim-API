@@ -211,11 +211,13 @@ def record_usage_result(
     api_key_id: Optional[uuid.UUID] = None,
     request_id: Optional[str] = None,
     metadata_json: Optional[str] = None,
+    user_id: Optional[uuid.UUID] = None,
 ) -> UsageEvent:
     """Record an operational usage event outcome (success/failure) for audit logs."""
+    target_user_id = user_id or (user.id if user else None)
     event = UsageEvent(
         id=uuid.uuid4(),
-        user_id=user.id,
+        user_id=target_user_id,
         api_key_id=api_key_id,
         event_type=event_type,
         request_id=request_id,
@@ -270,16 +272,22 @@ def get_user_usage_summary(db: Session, user: User) -> Dict[str, Any]:
 
 def refund_usage(
     db: Session,
-    user: User,
-    requested_interactions: int,
+    user: Optional[User] = None,
+    requested_interactions: int = 0,
     delta_requests: int = 1,
+    *,
+    user_id: Optional[uuid.UUID] = None,
 ) -> None:
     """Atomically decrement usage counters when simulation execution fails after quota reservation."""
+    target_user_id = user_id or (user.id if user else None)
+    if not target_user_id:
+        return
+
     period_start = get_current_period_start()
     stmt = (
         update(MonthlyUsage)
         .where(
-            MonthlyUsage.user_id == user.id,
+            MonthlyUsage.user_id == target_user_id,
             MonthlyUsage.period_start == period_start,
         )
         .values(
@@ -301,7 +309,7 @@ def refund_usage(
     db.commit()
     logger.info(
         "Refunded usage for user_id=%s: -%s requests, -%s interactions",
-        user.id,
+        target_user_id,
         delta_requests,
         requested_interactions,
     )

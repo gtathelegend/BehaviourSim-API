@@ -20,9 +20,18 @@ from app.services.simulation import (
     execute_simulation,
     normalize_preset_name,
 )
+from app.services.simulation_job import (
+    ALL_STATUSES,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_RUNNING,
+    create_simulation_job,
+    execute_simulation_job,
+)
 from app.services.usage import record_usage_result, refund_usage, reserve_usage
 
-ALLOWED_SIMULATION_STATUSES = {"completed", "failed", "pending"}
+ALLOWED_SIMULATION_STATUSES = ALL_STATUSES
 
 logger = logging.getLogger("behaviorsim_api.api.v1.simulations")
 
@@ -89,6 +98,7 @@ class SimulationResponse(BaseModel):
     simulation_id: str = Field(..., description="Unique identifier for the simulation run")
     preset: str = Field(..., description="Canonical preset name used for generation")
     num_interactions: int = Field(..., description="Number of interactions generated")
+    status: str = Field(default="completed", description="Simulation execution status (e.g. 'completed')")
     seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
     data: List[Dict[str, Any]] = Field(..., description="JSON-serialized synthetic interaction records")
     metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
@@ -103,11 +113,15 @@ class SimulationDetailResponse(BaseModel):
     seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
     profile: Optional[str] = Field(None, description="Domain persona/cohort profile name used")
     initial_state: Optional[str] = Field(None, description="Initial behavioral state used")
-    status: str = Field(..., description="Simulation execution status (e.g. 'completed')")
-    data: List[Dict[str, Any]] = Field(..., description="JSON-serialized synthetic interaction records")
-    metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
-    created_at: datetime = Field(..., description="Timestamp when the simulation was created")
-    completed_at: datetime = Field(..., description="Timestamp when the simulation completed")
+    status: str = Field(..., description="Simulation execution status (e.g. 'completed', 'failed', 'running', 'pending')")
+    data: Optional[List[Dict[str, Any]]] = Field(None, description="JSON-serialized synthetic interaction records if completed")
+    metadata: Optional[SimulationMetadata] = Field(None, description="Run provenance and reproducibility metadata")
+    error_code: Optional[str] = Field(None, description="Sanitized failure code if status is failed")
+    error_message: Optional[str] = Field(None, description="Sanitized error description if status is failed")
+    created_at: datetime = Field(..., description="Timestamp when the simulation job was created")
+    started_at: Optional[datetime] = Field(None, description="Timestamp when the simulation job started running")
+    completed_at: Optional[datetime] = Field(None, description="Timestamp when the simulation job completed or failed")
+    updated_at: Optional[datetime] = Field(None, description="Timestamp when the simulation record was last updated")
 
 
 class SimulationHistoryItem(BaseModel):
@@ -119,13 +133,17 @@ class SimulationHistoryItem(BaseModel):
     seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
     profile: Optional[str] = Field(None, description="Domain persona/cohort profile name used")
     initial_state: Optional[str] = Field(None, description="Initial behavioral state used")
-    status: str = Field(..., description="Simulation execution status (e.g. 'completed')")
-    compute_ms: int = Field(..., description="Total simulation compute time in milliseconds")
+    status: str = Field(..., description="Simulation execution status")
+    compute_ms: Optional[int] = Field(None, description="Total simulation compute time in milliseconds if completed")
     reproducible: bool = Field(..., description="True if an explicit seed was supplied guaranteeing reproducibility")
     behaviorsim_version: str = Field(..., description="Version of the core behaviorsim package used")
     api_version: str = Field(..., description="Semantic version of BehaviorSim API")
+    error_code: Optional[str] = Field(None, description="Sanitized failure code if failed")
     created_at: datetime = Field(..., description="Timestamp when the simulation was created")
-    completed_at: datetime = Field(..., description="Timestamp when the simulation completed")
+    started_at: Optional[datetime] = Field(None, description="Timestamp when the simulation started running")
+    completed_at: Optional[datetime] = Field(None, description="Timestamp when the simulation completed or failed")
+    updated_at: Optional[datetime] = Field(None, description="Timestamp when the simulation was last updated")
+
 
 
 class SimulationHistoryResponse(BaseModel):
@@ -178,14 +196,15 @@ def run_simulation(
             },
         )
 
+    user_id = user.id
     api_key_id = principal.api_key.id if principal.api_key else None
 
     # 2. Enforce plan-specific concurrent simulation limit
     max_concurrent = plan.max_concurrent_simulations if plan.max_concurrent_simulations else 1
-    if not default_concurrency_limiter.acquire(user.id, max_concurrent):
+    if not default_concurrency_limiter.acquire(user_id, max_concurrent):
         logger.warning(
             "Concurrent simulation limit reached: user_id=%s limit=%s",
-            user.id,
+            user_id,
             max_concurrent,
         )
         raise BehaviorSimAPIError(
@@ -199,7 +218,7 @@ def run_simulation(
         )
 
     try:
-        # 3. Atomically reserve quota (raises 429 quota_exceeded if exhausted)
+        # 3. Reserve quota atomically before creating job
         reserve_usage(
             db=db,
             user=user,
@@ -208,88 +227,24 @@ def run_simulation(
             api_key_id=api_key_id,
         )
 
-        # 4. Execute BehaviorSim simulation via service adapter
+        # 4. Create durable simulation job in 'pending' status
         try:
-            simulation_id_str, records, compute_ms = execute_simulation(
+            job = create_simulation_job(
+                db=db,
+                user=user,
                 preset=request.preset,
                 num_interactions=request.num_interactions,
                 seed=request.seed,
                 profile=request.profile,
                 initial_state=request.initial_state,
             )
-        except BehaviorSimAPIError:
-            refund_usage(
-                db=db,
-                user=user,
-                requested_interactions=request.num_interactions,
-                delta_requests=1,
-            )
-            record_usage_result(
-                db=db,
-                user=user,
-                event_type="simulation_failed",
-                success=False,
-                interaction_count=0,
-                compute_ms=0,
-                api_key_id=api_key_id,
-            )
-            raise
         except Exception as exc:
-            # Refund reserved quota on unexpected internal generation failure
             refund_usage(
                 db=db,
                 user=user,
                 requested_interactions=request.num_interactions,
                 delta_requests=1,
-            )
-            record_usage_result(
-                db=db,
-                user=user,
-                event_type="simulation_failed",
-                success=False,
-                interaction_count=0,
-                compute_ms=0,
-                api_key_id=api_key_id,
-            )
-            raise BehaviorSimAPIError(
-                message="Internal simulation generation failed. Please try again or contact support.",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                details={"code": "simulation_generation_failed"},
-            ) from exc
-
-        canonical_preset = normalize_preset_name(request.preset)
-        sim_uuid = uuid.UUID(simulation_id_str)
-        settings = get_settings()
-        user_id = user.id
-
-        # 5. Persist simulation record and bounded results in database
-        try:
-            sim_record = Simulation(
-                id=sim_uuid,
                 user_id=user_id,
-                preset=canonical_preset,
-                num_interactions=len(records),
-                seed=request.seed,
-                profile=request.profile,
-                initial_state=request.initial_state,
-                status="completed",
-                result_storage="database",
-                data=records,
-                behaviorsim_version="1.0.1",
-                api_version=settings.API_VERSION,
-                compute_ms=compute_ms,
-                reproducible=(request.seed is not None),
-            )
-            db.add(sim_record)
-            db.commit()
-        except Exception as exc:
-            logger.error("Failed to persist simulation record: %s", exc, exc_info=True)
-            # Refund quota on persistence failure to guarantee consistency
-            refund_usage(
-                db=db,
-                user=user,
-                requested_interactions=request.num_interactions,
-                delta_requests=1,
             )
             record_usage_result(
                 db=db,
@@ -299,6 +254,7 @@ def run_simulation(
                 interaction_count=0,
                 compute_ms=0,
                 api_key_id=api_key_id,
+                user_id=user_id,
             )
             raise BehaviorSimAPIError(
                 message="Failed to persist simulation run. Quota has been refunded.",
@@ -306,32 +262,32 @@ def run_simulation(
                 details={"code": "simulation_persistence_failed"},
             ) from exc
 
-        # 6. Record successful usage completion event
-        record_usage_result(
+        # 5. Execute simulation through the lifecycle service (pending -> running -> completed)
+        completed_job = execute_simulation_job(
             db=db,
+            job=job,
             user=user,
-            event_type="simulation_completed",
-            success=True,
-            interaction_count=request.num_interactions,
-            compute_ms=compute_ms,
             api_key_id=api_key_id,
+            reserve_quota=False,
         )
 
+        settings = get_settings()
         return SimulationResponse(
-            simulation_id=simulation_id_str,
-            preset=canonical_preset,
-            num_interactions=len(records),
-            seed=request.seed,
-            data=records,
+            simulation_id=str(completed_job.id),
+            preset=completed_job.preset,
+            num_interactions=completed_job.num_interactions,
+            status=completed_job.status,
+            seed=completed_job.seed,
+            data=completed_job.data or [],
             metadata=SimulationMetadata(
-                behaviorsim_version="1.0.1",
+                behaviorsim_version=completed_job.behaviorsim_version,
                 api_version=settings.API_VERSION,
-                compute_ms=compute_ms,
-                reproducible=(request.seed is not None),
+                compute_ms=completed_job.compute_ms or 0,
+                reproducible=completed_job.reproducible,
             ),
         )
     finally:
-        default_concurrency_limiter.release(user.id)
+        default_concurrency_limiter.release(user_id)
 
 
 @router.get(
@@ -402,8 +358,11 @@ def list_simulations(
             Simulation.reproducible,
             Simulation.behaviorsim_version,
             Simulation.api_version,
+            Simulation.error_code,
             Simulation.created_at,
+            Simulation.started_at,
             Simulation.completed_at,
+            Simulation.updated_at,
         )
         .where(*clauses)
         .order_by(Simulation.created_at.desc(), Simulation.id.desc())
@@ -425,8 +384,11 @@ def list_simulations(
             reproducible=row.reproducible,
             behaviorsim_version=row.behaviorsim_version,
             api_version=row.api_version,
+            error_code=row.error_code,
             created_at=row.created_at,
+            started_at=row.started_at,
             completed_at=row.completed_at,
+            updated_at=row.updated_at,
         )
         for row in rows
     ]
@@ -479,6 +441,16 @@ def get_simulation(
             details={"code": "simulation_not_found"},
         )
 
+    # Completed runs provide full metadata and results; pending/running/failed omit execution metrics
+    metadata = None
+    if sim.status == STATUS_COMPLETED and sim.compute_ms is not None:
+        metadata = SimulationMetadata(
+            behaviorsim_version=sim.behaviorsim_version,
+            api_version=sim.api_version,
+            compute_ms=sim.compute_ms,
+            reproducible=sim.reproducible,
+        )
+
     return SimulationDetailResponse(
         simulation_id=str(sim.id),
         preset=sim.preset,
@@ -488,14 +460,13 @@ def get_simulation(
         initial_state=sim.initial_state,
         status=sim.status,
         data=sim.data,
-        metadata=SimulationMetadata(
-            behaviorsim_version=sim.behaviorsim_version,
-            api_version=sim.api_version,
-            compute_ms=sim.compute_ms,
-            reproducible=sim.reproducible,
-        ),
+        metadata=metadata,
+        error_code=sim.error_code,
+        error_message=sim.error_message,
         created_at=sim.created_at,
+        started_at=sim.started_at,
         completed_at=sim.completed_at,
+        updated_at=sim.updated_at,
     )
 
 
@@ -522,7 +493,7 @@ def delete_simulation(
             details={"code": "simulation_not_found"},
         )
 
-    # 2. Query simulation strictly matching both simulation.id AND owner user_id
+    # 2. Query simulation strictly matching both simulation.id AND owner user_id (preserves IDOR masking)
     stmt = select(Simulation).where(
         Simulation.id == sim_uuid,
         Simulation.user_id == principal.user.id,
@@ -536,7 +507,23 @@ def delete_simulation(
             details={"code": "simulation_not_found"},
         )
 
-    # 3. Permanent hard delete (without modifying quota)
+    # 3. Guard against deleting actively running simulations
+    if sim.status == STATUS_RUNNING:
+        logger.warning(
+            "Attempted deletion of running simulation id=%s by user_id=%s",
+            sim.id,
+            principal.user.id,
+        )
+        raise BehaviorSimAPIError(
+            message=f"Cannot delete simulation '{simulation_id}' while it is currently running.",
+            status_code=status.HTTP_409_CONFLICT,
+            details={
+                "code": "cannot_delete_running_simulation",
+                "status": sim.status,
+            },
+        )
+
+    # 4. Permanent hard delete (without modifying quota)
     db.delete(sim)
     db.commit()
 

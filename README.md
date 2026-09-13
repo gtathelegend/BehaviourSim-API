@@ -352,6 +352,7 @@ Requires authentication (API key or user session token) and enforces rate limiti
   "simulation_id": "2728f775-9874-4dad-8584-10b9b43eb8f4",
   "preset": "education",
   "num_interactions": 100,
+  "status": "completed",
   "seed": 42,
   "data": [
     {
@@ -388,7 +389,7 @@ Requires authentication (cookie session or API key) and enforces rate limiting. 
 * `page` (integer, default: 1, min: 1): 1-indexed page number.
 * `page_size` (integer, default: 20, min: 1, max: 100): Number of items per page.
 * `preset` (string, optional): Filter by domain preset (`education`, `finance`, `healthcare`, `mobile_app`, or alias `mobile`). Invalid presets return `400 Bad Request`.
-* `status` (string, optional): Filter by simulation run status (`completed`, `failed`, `pending`). Invalid statuses return `400 Bad Request`.
+* `status` (string, optional): Filter by simulation run status (`completed`, `failed`, `running`, `pending`). Invalid statuses return `400 Bad Request`.
 
 **Performance & Lightweight Projections**: The history listing returns run provenance and metadata only. The heavy interaction dataset (`data`) is omitted from list items to conserve network bandwidth and database I/O. Full datasets are retrieved via `GET /v1/simulations/{simulation_id}`.
 
@@ -412,7 +413,9 @@ Requires authentication (cookie session or API key) and enforces rate limiting. 
       "behaviorsim_version": "1.0.1",
       "api_version": "0.1.0",
       "created_at": "2026-09-14T01:00:00Z",
-      "completed_at": "2026-09-14T01:00:01Z"
+      "started_at": "2026-09-14T01:00:00Z",
+      "completed_at": "2026-09-14T01:00:01Z",
+      "updated_at": "2026-09-14T01:00:01Z"
     }
   ],
   "page": 1,
@@ -428,9 +431,11 @@ Requires authentication (cookie session or API key) and enforces rate limiting. 
 GET /v1/simulations/{simulation_id}
 ```
 
-Requires authentication (cookie session or API key). Retrieves the complete stored simulation run, status, parameters, and generated data.
+Requires authentication (cookie session or API key). Retrieves the complete stored simulation run, lifecycle status, parameters, and generated data.
 
 **Security & IDOR Protection**: A caller can only retrieve simulations they own. If the simulation does not exist or belongs to another user, a uniform `404 Not Found` error envelope is returned to prevent identifier enumeration.
+
+**Failed / Incomplete Runs**: If a simulation run is `pending`, `running`, or `failed`, `data` and execution `metadata` are safely returned as `null`. Failed runs include sanitized `error_code` and `error_message` fields without leaking internal stack traces.
 
 **Response (HTTP 200 OK):**
 
@@ -464,7 +469,9 @@ Requires authentication (cookie session or API key). Retrieves the complete stor
     "reproducible": true
   },
   "created_at": "2026-09-14T01:00:00Z",
-  "completed_at": "2026-09-14T01:00:01Z"
+  "started_at": "2026-09-14T01:00:00Z",
+  "completed_at": "2026-09-14T01:00:01Z",
+  "updated_at": "2026-09-14T01:00:01Z"
 }
 ```
 
@@ -477,6 +484,8 @@ DELETE /v1/simulations/{simulation_id}
 Requires authentication (cookie session or API key) and enforces rate limiting. Permanently deletes a simulation run owned by the caller.
 
 **Status Code**: `HTTP 204 No Content` on successful permanent deletion.
+
+**Running Job Guard**: Attempting to delete a simulation currently in `running` status is rejected with `HTTP 409 Conflict` (`code: cannot_delete_running_simulation`) to prevent orphaned executions or inconsistent job state.
 
 **Security & IDOR Protection**: A caller can only delete simulations they own. If the simulation does not exist or belongs to another user, a uniform `404 Not Found` error envelope is returned to prevent identifier enumeration.
 
@@ -573,6 +582,7 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 12 Simulation History & Result Management**: Authenticated simulation history endpoint (`GET /v1/simulations`), bounded pagination (`page`, `page_size <= 100`), domain & status filtering, deterministic ordering (`created_at DESC, id DESC`), efficient metadata projection excluding large JSONB payloads, and strict caller-scoped ownership isolation.
 * **Phase 13 Simulation Deletion & Data Lifecycle Foundation**: Authenticated permanent deletion endpoint (`DELETE /v1/simulations/{simulation_id}`), HTTP 204 No Content response, strict caller-scoped ownership isolation (IDOR protection), immediate removal from history and detail endpoints, and preserved quota accounting (no quota refunds on delete).
 * **Phase 14 Reliability, Resource Protection & Concurrency Hardening**: In-memory plan-scoped concurrent simulation limiter, PostgreSQL `with_for_update` row-level API key race serialization, 1 MB request body ceiling middleware (`HTTP 413`), rate limiter memory hygiene/pruning, and rate limiting coverage for API key management routes.
+* **Phase 15 Async Simulation Jobs & Execution Architecture**: Explicit simulation job lifecycle (`pending` → `running` → `completed` / `failed`), Alembic migration `0005_simulation_job_lifecycle` with nullable result columns (`data`, `compute_ms`, `completed_at`) and lifecycle timestamps (`started_at`, `updated_at`, `error_code`, `error_message`), validated state transition machine preventing transitions out of terminal states, running job deletion guard (`HTTP 409 Conflict`), safe failure representation without stack trace leaks, backward-compatible synchronous HTTP contract (`status="completed"` returned on `POST /v1/simulations`), and atomic quota reservation/refund/finalization consistency.
 
 ## 14. Intentionally Deferred Capabilities
 

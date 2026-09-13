@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.db.models.api_key import APIKey
     from app.db.models.plan import Plan
     from app.db.models.session import UserSession
+    from app.db.models.simulation import Simulation
     from app.db.models.usage import MonthlyUsage, UsageEvent
 
 
@@ -93,6 +94,11 @@ class User(Base):
     )
     usage_events: Mapped[List["UsageEvent"]] = relationship(
         "UsageEvent",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    simulations: Mapped[List["Simulation"]] = relationship(
+        "Simulation",
         back_populates="user",
         cascade="all, delete-orphan",
     )

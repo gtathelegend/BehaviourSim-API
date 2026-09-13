@@ -1,15 +1,17 @@
-"""Simulation execution endpoint for BehaviorSim API."""
-
 import logging
+import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Path as FastPath, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.auth import AuthenticatedPrincipal, get_current_principal
 from app.core.config import get_settings
 from app.core.errors import BehaviorSimAPIError
 from app.core.rate_limit import check_rate_limit
+from app.db.models.simulation import Simulation
 from app.db.session import get_db
 from app.services.simulation import execute_simulation, normalize_preset_name
 from app.services.usage import record_usage_result, refund_usage, reserve_usage
@@ -84,12 +86,28 @@ class SimulationResponse(BaseModel):
     metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
 
 
+class SimulationDetailResponse(BaseModel):
+    """Durable simulation record detail response schema."""
+
+    simulation_id: str = Field(..., description="Unique identifier for the simulation run")
+    preset: str = Field(..., description="Canonical preset name used for generation")
+    num_interactions: int = Field(..., description="Number of interactions generated")
+    seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
+    profile: Optional[str] = Field(None, description="Domain persona/cohort profile name used")
+    initial_state: Optional[str] = Field(None, description="Initial behavioral state used")
+    status: str = Field(..., description="Simulation execution status (e.g. 'completed')")
+    data: List[Dict[str, Any]] = Field(..., description="JSON-serialized synthetic interaction records")
+    metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
+    created_at: datetime = Field(..., description="Timestamp when the simulation was created")
+    completed_at: datetime = Field(..., description="Timestamp when the simulation completed")
+
+
 @router.post(
     "",
     response_model=SimulationResponse,
     status_code=status.HTTP_200_OK,
     summary="Execute behavioral simulation",
-    description="Authenticate, reserve quota, and execute a behavioral simulation run using the published BehaviorSim engine.",
+    description="Authenticate, reserve quota, execute a behavioral simulation, and persist the run and results.",
     dependencies=[Depends(check_rate_limit)],
 )
 def run_simulation(
@@ -97,7 +115,7 @@ def run_simulation(
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     db: Session = Depends(get_db),
 ) -> SimulationResponse:
-    """Execute a validated simulation run within caller's plan limits."""
+    """Execute a validated simulation run within caller's plan limits and persist the results."""
     user = principal.user
     plan = user.plan
     if plan is None:
@@ -137,7 +155,7 @@ def run_simulation(
 
     # 3. Execute BehaviorSim simulation via service adapter
     try:
-        simulation_id, records, compute_ms = execute_simulation(
+        simulation_id_str, records, compute_ms = execute_simulation(
             preset=request.preset,
             num_interactions=request.num_interactions,
             seed=request.seed,
@@ -184,7 +202,56 @@ def run_simulation(
             details={"code": "simulation_generation_failed"},
         ) from exc
 
-    # 4. Record successful usage completion event
+    canonical_preset = normalize_preset_name(request.preset)
+    sim_uuid = uuid.UUID(simulation_id_str)
+    settings = get_settings()
+    user_id = user.id
+
+    # 4. Persist simulation record and bounded results in database
+    try:
+        sim_record = Simulation(
+            id=sim_uuid,
+            user_id=user_id,
+            preset=canonical_preset,
+            num_interactions=len(records),
+            seed=request.seed,
+            profile=request.profile,
+            initial_state=request.initial_state,
+            status="completed",
+            result_storage="database",
+            data=records,
+            behaviorsim_version="1.0.1",
+            api_version=settings.API_VERSION,
+            compute_ms=compute_ms,
+            reproducible=(request.seed is not None),
+        )
+        db.add(sim_record)
+        db.commit()
+    except Exception as exc:
+        logger.error("Failed to persist simulation record: %s", exc, exc_info=True)
+        # Refund quota on persistence failure to guarantee consistency
+        refund_usage(
+            db=db,
+            user=user,
+            requested_interactions=request.num_interactions,
+            delta_requests=1,
+        )
+        record_usage_result(
+            db=db,
+            user=user,
+            event_type="simulation_failed",
+            success=False,
+            interaction_count=0,
+            compute_ms=0,
+            api_key_id=api_key_id,
+        )
+        raise BehaviorSimAPIError(
+            message="Failed to persist simulation run. Quota has been refunded.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            details={"code": "simulation_persistence_failed"},
+        ) from exc
+
+    # 5. Record successful usage completion event
     record_usage_result(
         db=db,
         user=user,
@@ -195,18 +262,73 @@ def run_simulation(
         api_key_id=api_key_id,
     )
 
-    canonical_preset = normalize_preset_name(request.preset)
-
     return SimulationResponse(
-        simulation_id=simulation_id,
+        simulation_id=simulation_id_str,
         preset=canonical_preset,
         num_interactions=len(records),
         seed=request.seed,
         data=records,
         metadata=SimulationMetadata(
             behaviorsim_version="1.0.1",
-            api_version=get_settings().API_VERSION,
+            api_version=settings.API_VERSION,
             compute_ms=compute_ms,
             reproducible=(request.seed is not None),
         ),
+    )
+
+
+@router.get(
+    "/{simulation_id}",
+    response_model=SimulationDetailResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve persisted simulation run",
+    description="Retrieve execution details, reproducibility metadata, and generated results of a simulation owned by the caller.",
+)
+def get_simulation(
+    simulation_id: str = FastPath(..., description="UUID of the simulation run to retrieve"),
+    principal: AuthenticatedPrincipal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+) -> SimulationDetailResponse:
+    """Retrieve a persisted simulation run with strict owner-level IDOR enforcement."""
+    # 1. Validate UUID format
+    try:
+        sim_uuid = uuid.UUID(simulation_id)
+    except (ValueError, TypeError):
+        raise BehaviorSimAPIError(
+            message=f"Simulation '{simulation_id}' not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"code": "simulation_not_found"},
+        )
+
+    # 2. Query simulation strictly matching both simulation.id AND owner user_id
+    stmt = select(Simulation).where(
+        Simulation.id == sim_uuid,
+        Simulation.user_id == principal.user.id,
+    )
+    sim = db.execute(stmt).scalar_one_or_none()
+
+    if sim is None:
+        raise BehaviorSimAPIError(
+            message=f"Simulation '{simulation_id}' not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            details={"code": "simulation_not_found"},
+        )
+
+    return SimulationDetailResponse(
+        simulation_id=str(sim.id),
+        preset=sim.preset,
+        num_interactions=sim.num_interactions,
+        seed=sim.seed,
+        profile=sim.profile,
+        initial_state=sim.initial_state,
+        status=sim.status,
+        data=sim.data,
+        metadata=SimulationMetadata(
+            behaviorsim_version=sim.behaviorsim_version,
+            api_version=sim.api_version,
+            compute_ms=sim.compute_ms,
+            reproducible=sim.reproducible,
+        ),
+        created_at=sim.created_at,
+        completed_at=sim.completed_at,
     )

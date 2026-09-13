@@ -331,7 +331,7 @@ Publicly accessible discovery endpoints describing supported domains, cohorts/pr
 POST /v1/simulations
 ```
 
-Requires authentication (API key or user session token) and enforces rate limiting (5 req/min on Free plan) and monthly quota.
+Requires authentication (API key or user session token) and enforces rate limiting (5 req/min on Free plan) and monthly quota. When execution succeeds, the simulation run, execution provenance, and synthetic data are durably persisted to PostgreSQL. If execution or persistence fails, reserved quota is automatically refunded.
 
 **Request Schema:**
 
@@ -373,6 +373,52 @@ Requires authentication (API key or user session token) and enforces rate limiti
     "compute_ms": 12,
     "reproducible": true
   }
+}
+```
+
+### Retrieve Simulation Run
+
+```http
+GET /v1/simulations/{simulation_id}
+```
+
+Requires authentication (cookie session or API key). Retrieves the complete stored simulation run, status, parameters, and generated data.
+
+**Security & IDOR Protection**: A caller can only retrieve simulations they own. If the simulation does not exist or belongs to another user, a uniform `404 Not Found` error envelope is returned to prevent identifier enumeration.
+
+**Response (HTTP 200 OK):**
+
+```json
+{
+  "simulation_id": "2728f775-9874-4dad-8584-10b9b43eb8f4",
+  "preset": "education",
+  "num_interactions": 100,
+  "seed": 42,
+  "profile": "average",
+  "initial_state": "Optimal",
+  "status": "completed",
+  "data": [
+    {
+      "profile": "average",
+      "sequence_id": 1,
+      "interaction_id": 1,
+      "state": "Optimal",
+      "difficulty": 1,
+      "accuracy": 0,
+      "nrt": 1.215,
+      "retries": 1,
+      "help_requested": 0,
+      "confidence": 2
+    }
+  ],
+  "metadata": {
+    "behaviorsim_version": "1.0.1",
+    "api_version": "0.1.0",
+    "compute_ms": 12,
+    "reproducible": true
+  },
+  "created_at": "2026-09-14T01:00:00Z",
+  "completed_at": "2026-09-14T01:00:01Z"
 }
 ```
 
@@ -455,13 +501,13 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 6 Production Hardening & Operational Readiness**: Production configuration validation, database connection pooling, `/ready` database readiness probe, `SecurityHeadersMiddleware`, `CorrelationIdMiddleware` with contextvar structured logging, error response sanitization (500/422/domain) concealing stack traces, non-negative transactional refund safety, and comprehensive smoke/hardening test suites.
 * **Phase 7 Deployment Readiness Audit**: Complete API contract verification, `/v1/api-keys` HTTP routes (`GET`, `POST`, `DELETE`), OpenAPI 3.1 schema verification, and comprehensive 26-point production integration suite.
 * **Phase 8A Render Deployment Preparation**: Python runtime pinning (`.python-version` with 3.12.10), Render Blueprint specification (`render.yaml`), PostgreSQL connection string normalization (`postgres://` & `postgresql://`), clean lifespan engine disposal, and authoritative Render deployment runbook ([DEPLOYMENT.md](DEPLOYMENT.md)).
+* **Phase 11 Simulation Persistence & History**: Durable PostgreSQL simulation persistence (`simulations` table, Alembic revision `0004_add_simulations`), JSON/JSONB interaction storage, automatic quota refund on persistence failure, and secure retrieval endpoint (`GET /v1/simulations/{simulation_id}`) with strict ownership isolation (IDOR protection).
 
 ## 14. Intentionally Deferred Capabilities
 
 The following capabilities are intentionally deferred for subsequent phases:
 * Redis distributed state and distributed rate limiting (required before horizontally scaling API instances > 1)
 * Asynchronous background simulation execution and job queues (Celery)
-* Long-term simulation dataset persistence and retrieval (`GET /v1/simulations/{id}`)
 * Object storage integration (S3) for simulation artifact exports
 * Billing and subscription payment processing (Stripe)
 

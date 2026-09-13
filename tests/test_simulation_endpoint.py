@@ -10,6 +10,7 @@ from app.core.rate_limit import default_rate_limiter
 from app.core.security import generate_session_token, hash_session_token
 from app.db.models.plan import Plan
 from app.db.models.session import UserSession
+from app.db.models.simulation import Simulation
 from app.db.models.usage import MonthlyUsage, UsageEvent
 from app.db.models.user import User
 from app.services.api_key import create_api_key, revoke_api_key
@@ -399,3 +400,162 @@ def test_simulation_failure_refunds_quota(client: TestClient, db_session: Sessio
     event = db_session.query(UsageEvent).filter_by(user_id=user.id, event_type="simulation_failed").first()
     assert event is not None
     assert event.success is False
+
+
+# ============================================================================
+# 7. Phase 11 Simulation Persistence & History Tests (GET /v1/simulations/{id})
+# ============================================================================
+
+def test_simulation_persisted_on_post(client: TestClient, db_session: Session):
+    """Verify POST /v1/simulations persists record in database matching response."""
+    user = User(email="persist_test_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Persist Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    resp = client.post(
+        "/v1/simulations",
+        headers=headers,
+        json={"preset": "education", "num_interactions": 10, "seed": 42},
+    )
+    assert resp.status_code == 200
+    resp_data = resp.json()
+    sim_id = resp_data["simulation_id"]
+
+    # Check database persistence
+    sim = db_session.query(Simulation).filter_by(id=uuid.UUID(sim_id)).first()
+    assert sim is not None
+    assert sim.user_id == user.id
+    assert sim.preset == "education"
+    assert sim.num_interactions == 10
+    assert sim.seed == 42
+    assert sim.status == "completed"
+    assert sim.result_storage == "database"
+    assert sim.reproducible is True
+    assert len(sim.data) == 10
+    assert sim.data == resp_data["data"]
+
+
+def test_get_simulation_by_owner(client: TestClient, db_session: Session):
+    """Verify owner can retrieve persisted simulation run by ID."""
+    user = User(email="owner_sim_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Owner Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # Execute simulation
+    post_resp = client.post(
+        "/v1/simulations",
+        headers=headers,
+        json={"preset": "education", "num_interactions": 10, "seed": 123},
+    )
+    assert post_resp.status_code == 200
+    sim_id = post_resp.json()["simulation_id"]
+
+    # Retrieve simulation by ID
+    get_resp = client.get(f"/v1/simulations/{sim_id}", headers=headers)
+    assert get_resp.status_code == 200
+    get_data = get_resp.json()
+    assert get_data["simulation_id"] == sim_id
+    assert get_data["preset"] == "education"
+    assert get_data["num_interactions"] == 10
+    assert get_data["seed"] == 123
+    assert get_data["status"] == "completed"
+    assert len(get_data["data"]) == 10
+    assert "metadata" in get_data
+    assert get_data["metadata"]["reproducible"] is True
+    assert "created_at" in get_data
+    assert "completed_at" in get_data
+
+
+def test_get_simulation_unauthenticated(client: TestClient, db_session: Session):
+    """Verify unauthenticated GET /v1/simulations/{id} returns HTTP 401."""
+    random_id = str(uuid.uuid4())
+    resp = client.get(f"/v1/simulations/{random_id}")
+    assert resp.status_code == 401
+
+
+def test_get_simulation_idor_protection(client: TestClient, db_session: Session):
+    """Verify User B cannot retrieve User A's simulation run (returns HTTP 404, preventing IDOR/leakage)."""
+    user_a = User(email="user_a_sim@example.com")
+    user_b = User(email="user_b_sim@example.com")
+    db_session.add_all([user_a, user_b])
+    db_session.commit()
+
+    key_a = create_api_key(db_session, user_a, name="Key A")
+    key_b = create_api_key(db_session, user_b, name="Key B")
+
+    # User A creates a simulation
+    resp_a = client.post(
+        "/v1/simulations",
+        headers={"Authorization": f"Bearer {key_a.key}"},
+        json={"preset": "education", "num_interactions": 10},
+    )
+    assert resp_a.status_code == 200
+    sim_id = resp_a.json()["simulation_id"]
+
+    # User B attempts to access User A's simulation
+    resp_b = client.get(
+        f"/v1/simulations/{sim_id}",
+        headers={"Authorization": f"Bearer {key_b.key}"},
+    )
+    assert resp_b.status_code == 404
+    assert resp_b.json()["error"]["details"]["code"] == "simulation_not_found"
+
+
+def test_get_simulation_not_found_and_malformed(client: TestClient, db_session: Session):
+    """Verify nonexistent UUID and malformed UUID both return 404 simulation_not_found."""
+    user = User(email="notfound_test_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # Nonexistent UUID
+    nonexistent_id = str(uuid.uuid4())
+    resp_nonexistent = client.get(f"/v1/simulations/{nonexistent_id}", headers=headers)
+    assert resp_nonexistent.status_code == 404
+    assert resp_nonexistent.json()["error"]["details"]["code"] == "simulation_not_found"
+
+    # Malformed non-UUID
+    resp_malformed = client.get("/v1/simulations/not-a-valid-uuid", headers=headers)
+    assert resp_malformed.status_code == 404
+    assert resp_malformed.json()["error"]["details"]["code"] == "simulation_not_found"
+
+
+def test_simulation_persistence_failure_refunds_quota(client: TestClient, db_session: Session):
+    """Verify failure during database persistence triggers rollback and refunds quota."""
+    user = User(email="persist_fail_user@example.com")
+    db_session.add(user)
+    db_session.commit()
+    key = create_api_key(db_session, user, name="Key")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    # Ensure monthly usage record exists before mock
+    period_start = get_current_period_start()
+    db_session.query(MonthlyUsage).filter_by(user_id=user.id, period_start=period_start).first()
+
+    original_add = Session.add
+
+    def mocked_add(self, instance, *args, **kwargs):
+        if isinstance(instance, Simulation):
+            raise RuntimeError("DB simulation write error")
+        return original_add(self, instance, *args, **kwargs)
+
+    with patch.object(Session, "add", side_effect=mocked_add, autospec=True):
+        resp = client.post(
+            "/v1/simulations",
+            headers=headers,
+            json={"preset": "education", "num_interactions": 25},
+        )
+        assert resp.status_code == 500
+        assert resp.json()["error"]["details"]["code"] == "simulation_persistence_failed"
+
+    # Verify quota was refunded
+    db_session.expire_all()
+    usage = db_session.query(MonthlyUsage).filter_by(user_id=user.id, period_start=period_start).first()
+    assert usage is not None
+    assert usage.request_count == 0
+    assert usage.interaction_count == 0

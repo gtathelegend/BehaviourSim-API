@@ -46,26 +46,41 @@ class SimulationWorker:
             True if a job was found and processed (success or handled failure),
             False if no eligible jobs were available in the queue.
         """
-        with self.session_factory() as session:
-            job = claim_next_job(
-                db=session,
-                worker_id=self.worker_id,
-                lease_timeout_seconds=self.lease_timeout,
+        try:
+            with self.session_factory() as session:
+                job = claim_next_job(
+                    db=session,
+                    worker_id=self.worker_id,
+                    lease_timeout_seconds=self.lease_timeout,
+                )
+
+            if job is None:
+                return False
+
+            logger.info(
+                "Worker %s processing job id=%s (preset=%s)",
+                self.worker_id,
+                job.id,
+                job.preset,
+                extra={"simulation_id": str(job.id), "worker_id": self.worker_id},
             )
 
-        if job is None:
+            with self.session_factory() as session:
+                process_claimed_job(
+                    db=session,
+                    job=job,
+                    worker_id=self.worker_id,
+                )
+
+            return True
+        except Exception as exc:
+            logger.error(
+                "Worker %s encountered unexpected error during execution cycle: %s",
+                self.worker_id,
+                exc,
+                exc_info=True,
+            )
             return False
-
-        logger.info("Worker %s processing job id=%s (preset=%s)", self.worker_id, job.id, job.preset)
-
-        with self.session_factory() as session:
-            process_claimed_job(
-                db=session,
-                job=job,
-                worker_id=self.worker_id,
-            )
-
-        return True
 
     def run(self) -> None:
         """Main execution loop polling for jobs until termination signal is caught."""
@@ -82,11 +97,21 @@ class SimulationWorker:
 
         try:
             while not self._stop_requested:
-                did_work = self.run_once()
-                if not did_work and not self._stop_requested:
-                    time.sleep(self.poll_interval)
+                try:
+                    did_work = self.run_once()
+                    if not did_work and not self._stop_requested:
+                        time.sleep(self.poll_interval)
+                except Exception as loop_exc:
+                    logger.error(
+                        "Worker %s loop error: %s (sleeping 2s before retry)",
+                        self.worker_id,
+                        loop_exc,
+                        exc_info=True,
+                    )
+                    time.sleep(2.0)
         finally:
             logger.info("SimulationWorker %s stopped cleanly.", self.worker_id)
+
 
 
 def main() -> None:

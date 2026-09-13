@@ -21,9 +21,15 @@ def get_current_request_id() -> str:
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
-    """Middleware to extract or generate and propagate X-Request-ID correlation headers."""
+    """Middleware to extract or generate and propagate X-Request-ID correlation headers with metrics and structured logging."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        import logging
+        import time
+        from app.core.metrics import operational_metrics
+
+        logger = logging.getLogger("behaviorsim_api.access")
+
         incoming_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID")
         if incoming_id and SAFE_REQUEST_ID_PATTERN.match(incoming_id):
             request_id = incoming_id
@@ -32,12 +38,33 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
 
         token = request_id_ctx_var.set(request_id)
         request.state.request_id = request_id
+        start_time = time.time()
         try:
             response = await call_next(request)
+            duration_ms = (time.time() - start_time) * 1000
             response.headers["X-Request-ID"] = request_id
+
+            # Record operational metrics
+            operational_metrics.record_request(
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+            )
+
+            # Log structured access event (omitting sensitive query parameters or body payloads)
+            logger.info(
+                "HTTP %s %s status=%s duration_ms=%.1f",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+                extra={"request_id": request_id},
+            )
             return response
         finally:
             request_id_ctx_var.reset(token)
+
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

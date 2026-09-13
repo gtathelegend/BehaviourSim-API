@@ -591,6 +591,12 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
   * **Stuck-Job Recovery & Retry Safety**: Worker heartbeat tracking (`heartbeat_at`), lease timeout expiration recovery, and automated terminal failure transition with quota refund when `attempt_count >= max_attempts` (default: 3).
   * **Deletion Semantics**: Running simulations reject deletion (`HTTP 409 Conflict`), while deleting an unexecuted `pending` simulation safely refunds the reserved quota.
   * **Transitional Synchronous Compatibility**: `POST /v1/simulations?sync=true` and `Prefer: return=representation` header maintain backwards compatibility for synchronous consumers during frontend migration.
+* **Phase 18 Production Observability & Async Operations**:
+  * **End-to-End Request Correlation**: `CorrelationIdMiddleware` validates, sanitizes, and propagates `X-Request-ID` across inbound requests, outbound responses, and downstream error envelopes, preserving client trace IDs while rejecting malicious or oversized payloads.
+  * **Zero-Leak Logging & Secret Redaction**: `SafeFormatter` and `redact_sensitive_text` scrub Bearer tokens, live API keys (`bs_live_*`), session tokens (`bs_sess_*`), cookies (`behaviorsim_session`), passwords, client secrets, and database connection strings from all log lines while injecting correlation tags `[req:...]`, `[sim:...]`, and `[user:...]`.
+  * **In-Process Operational Metrics**: Thread-safe `OperationalMetrics` collector records API throughput (by method), error distributions (by HTTP status), auth failures, rate limit rejections, simulation lifecycle counters (accepted, completed, failed by code), and min/max/average execution duration and queue wait latencies.
+  * **Safe Read-Only Diagnostics Endpoint**: `GET /v1/diagnostics` provides real-time system observability, returning operational status, server version, uptime, in-process metrics, and live PostgreSQL queue depth (pending and running job counts) without mutating database state.
+  * **Worker Resilience & Stuck Pending Expiration**: Background worker loop isolates transient database and network exceptions with sleep backoff; `claim_next_job` enforces `max_pending_seconds=3600` to fail starved pending jobs with `error_code="queue_timeout"` and refund quota; and running job lease timeout recovers crashed worker allocations safely.
 
 ## 14. Architecture Status: Implemented vs. Scale Requirements
 

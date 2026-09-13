@@ -30,11 +30,13 @@ from app.services.simulation_job import (
     create_simulation_job,
     execute_simulation_job,
 )
+from app.core.metrics import operational_metrics
 from app.services.usage import record_usage_result, refund_usage, reserve_usage
 
 ALLOWED_SIMULATION_STATUSES = ALL_STATUSES
 
 logger = logging.getLogger("behaviorsim_api.api.v1.simulations")
+
 
 router = APIRouter(prefix="/simulations", tags=["simulations"])
 
@@ -275,6 +277,17 @@ def run_simulation(
                 details={"code": "simulation_persistence_failed"},
             ) from exc
 
+        # Record operational metric and structured log
+        operational_metrics.record_simulation_accepted(preset=job.preset, num_interactions=job.num_interactions)
+        logger.info(
+            "Simulation job accepted: id=%s preset=%s interactions=%s user_id=%s",
+            job.id,
+            job.preset,
+            job.num_interactions,
+            user_id,
+            extra={"simulation_id": str(job.id), "user_id": str(user_id)},
+        )
+
         response.status_code = status.HTTP_202_ACCEPTED
         return SimulationPendingResponse(
             simulation_id=str(job.id),
@@ -285,6 +298,7 @@ def run_simulation(
             created_at=job.created_at,
             updated_at=job.updated_at,
         )
+
 
     # --- Mode B: Transitional Synchronous Execution (sync=true, HTTP 200 OK) ---
     max_concurrent = plan.max_concurrent_simulations if plan.max_concurrent_simulations else 1
@@ -356,6 +370,18 @@ def run_simulation(
         )
 
         settings = get_settings()
+        operational_metrics.record_simulation_accepted(preset=completed_job.preset, num_interactions=completed_job.num_interactions)
+        operational_metrics.record_simulation_completed(compute_ms=completed_job.compute_ms or 0, queue_wait_ms=0)
+        logger.info(
+            "Synchronous simulation completed: id=%s preset=%s interactions=%s compute_ms=%s user_id=%s",
+            completed_job.id,
+            completed_job.preset,
+            completed_job.num_interactions,
+            completed_job.compute_ms,
+            user_id,
+            extra={"simulation_id": str(completed_job.id), "user_id": str(user_id)},
+        )
+
         response.status_code = status.HTTP_200_OK
         return SimulationResponse(
             simulation_id=str(completed_job.id),
@@ -371,6 +397,7 @@ def run_simulation(
                 reproducible=completed_job.reproducible,
             ),
         )
+
     finally:
         default_concurrency_limiter.release(user_id)
 

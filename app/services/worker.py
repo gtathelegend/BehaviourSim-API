@@ -34,6 +34,16 @@ from app.services.usage import (
 logger = logging.getLogger("behaviorsim_api.services.worker")
 
 
+def ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure datetime is timezone-aware UTC, normalizing naive datetimes from SQLite."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+
 def get_user_concurrency_capacity(
     db: Session,
     user_id: uuid.UUID,
@@ -71,10 +81,14 @@ def get_user_concurrency_capacity(
     return active_count < max_concurrent
 
 
+from app.core.metrics import operational_metrics
+
+
 def claim_next_job(
     db: Session,
     worker_id: str,
     lease_timeout_seconds: int = 300,
+    max_pending_seconds: int = 3600,
 ) -> Optional[Simulation]:
     """Atomically claim the next eligible simulation job using PostgreSQL SKIP LOCKED.
 
@@ -82,6 +96,7 @@ def claim_next_job(
     - Multiple concurrent workers never block each other or claim the same job.
     - Inspects pending jobs and expired running jobs (stuck-job recovery).
     - Checks user's max_concurrent_simulations before claiming.
+    - Automatically expires and refunds pending jobs older than max_pending_seconds.
     - Exceeded max retries triggers automatic terminal failure transition with quota refund.
     - Returns claimed Simulation entity in 'running' status, or None if no job available.
     """
@@ -124,6 +139,7 @@ def claim_next_job(
                     job.id,
                     job.attempt_count,
                     job.max_attempts,
+                    extra={"simulation_id": str(job.id), "user_id": str(user_id)},
                 )
                 # Fail job permanently and refund quota
                 job.status = STATUS_FAILED
@@ -147,6 +163,7 @@ def claim_next_job(
                     compute_ms=0,
                 )
                 db.commit()
+                operational_metrics.record_simulation_failed("execution_timeout")
                 continue  # Inspect next candidate
 
             # Stuck job with attempts remaining: verify user concurrency before re-claiming
@@ -168,11 +185,46 @@ def claim_next_job(
                 job.id,
                 job.attempt_count,
                 job.max_attempts,
+                extra={"simulation_id": str(job.id), "user_id": str(user_id)},
             )
             return job
 
-        # Case B: Candidate is a fresh pending job
+        # Case B: Candidate is a pending job
         if job.status == STATUS_PENDING:
+            # Check if pending job has exceeded maximum queue wait timeout
+            created_at_utc = ensure_utc(job.created_at)
+            if created_at_utc and created_at_utc < (now - timedelta(seconds=max_pending_seconds)):
+                logger.warning(
+                    "Job id=%s exceeded maximum pending queue time (%ss). Marking terminal failed.",
+                    job.id,
+                    max_pending_seconds,
+                    extra={"simulation_id": str(job.id), "user_id": str(user_id)},
+                )
+                job.status = STATUS_FAILED
+                job.error_code = "queue_timeout"
+                job.error_message = f"Simulation queued longer than maximum wait time ({max_pending_seconds}s)."
+                job.completed_at = now
+                job.updated_at = now
+                db.add(job)
+                refund_usage(
+                    db=db,
+                    user_id=user_id,
+                    requested_interactions=job.num_interactions,
+                    delta_requests=1,
+                )
+                record_usage_result(
+                    db=db,
+                    user_id=user_id,
+                    event_type="simulation_failed",
+                    success=False,
+                    interaction_count=0,
+                    compute_ms=0,
+                )
+                db.commit()
+                operational_metrics.record_simulation_failed("queue_timeout")
+                continue  # Inspect next candidate
+
+
             # Check if user has concurrency capacity
             if not get_user_concurrency_capacity(db, user_id):
                 continue
@@ -194,10 +246,12 @@ def claim_next_job(
                 job.id,
                 job.attempt_count,
                 job.max_attempts,
+                extra={"simulation_id": str(job.id), "user_id": str(user_id)},
             )
             return job
 
     return None
+
 
 
 def update_job_heartbeat(
@@ -269,6 +323,17 @@ def process_claimed_job(
         )
         return False
 
+    # Calculate queue wait duration if timestamps are present
+    queue_wait_ms: Optional[int] = None
+    if current_job.claimed_at and current_job.created_at:
+        claimed_utc = ensure_utc(current_job.claimed_at)
+        created_utc = ensure_utc(current_job.created_at)
+        if claimed_utc and created_utc:
+            queue_wait_ms = max(
+                0, int((claimed_utc - created_utc).total_seconds() * 1000)
+            )
+
+
     # Handle failure outcome
     if exec_error_code is not None:
         current_job.status = STATUS_FAILED
@@ -292,7 +357,13 @@ def process_claimed_job(
             compute_ms=0,
         )
         db.commit()
-        logger.info("Job id=%s marked failed with code=%s", job_id, exec_error_code)
+        operational_metrics.record_simulation_failed(exec_error_code)
+        logger.info(
+            "Job id=%s marked failed with code=%s",
+            job_id,
+            exec_error_code,
+            extra={"simulation_id": str(job_id), "user_id": str(user_id)},
+        )
         return False
 
     # Handle success outcome
@@ -312,10 +383,26 @@ def process_claimed_job(
             compute_ms=compute_ms,
         )
         db.commit()
-        logger.info("Job id=%s completed successfully in %sms", job_id, compute_ms)
+        operational_metrics.record_simulation_completed(
+            compute_ms=compute_ms or 0,
+            queue_wait_ms=queue_wait_ms,
+        )
+        logger.info(
+            "Job id=%s completed successfully in %sms (queue_wait=%sms)",
+            job_id,
+            compute_ms,
+            queue_wait_ms,
+            extra={"simulation_id": str(job_id), "user_id": str(user_id)},
+        )
         return True
     except Exception as exc:
-        logger.error("Failed to persist completed job id=%s: %s", job_id, exc, exc_info=True)
+        logger.error(
+            "Failed to persist completed job id=%s: %s",
+            job_id,
+            exc,
+            exc_info=True,
+            extra={"simulation_id": str(job_id), "user_id": str(user_id)},
+        )
         db.rollback()
         # Fallback: mark failed and refund quota
         try:
@@ -342,6 +429,8 @@ def process_claimed_job(
                     compute_ms=0,
                 )
                 db.commit()
+                operational_metrics.record_simulation_failed("simulation_persistence_failed")
         except Exception:
             pass
         return False
+

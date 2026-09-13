@@ -277,7 +277,7 @@ def test_api_run_simulation_returns_status_and_data(tmp_path: Path):
     try:
         client = TestClient(app)
         res = client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers={"Authorization": f"Bearer {key}"},
             json={"preset": "education", "num_interactions": 10, "seed": 42},
         )
@@ -574,7 +574,7 @@ def test_concurrent_simulation_jobs_limit(tmp_path: Path):
         with patch("app.services.simulation_job.execute_simulation", side_effect=slow_execute_simulation):
             def make_request():
                 return client.post(
-                    "/v1/simulations",
+                    "/v1/simulations?sync=true",
                     headers={"Authorization": f"Bearer {key}"},
                     json={"preset": "education", "num_interactions": 10},
                 )

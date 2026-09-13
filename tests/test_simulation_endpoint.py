@@ -125,7 +125,7 @@ def test_simulation_supports_session_cookie(client: TestClient, db_session: Sess
 
     client.cookies.set("behaviorsim_session", raw_token)
     resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         json={"preset": "education", "num_interactions": 10, "seed": 42},
     )
     assert resp.status_code == 200
@@ -226,7 +226,7 @@ def test_simulation_all_presets_execution(preset_name: str, client: TestClient, 
     headers = {"Authorization": f"Bearer {key.key}"}
 
     resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": preset_name, "num_interactions": 15, "seed": 100},
     )
@@ -254,7 +254,7 @@ def test_simulation_seed_reproducibility(client: TestClient, db_session: Session
 
     # Run 1 with seed=42
     resp1 = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 20, "seed": 42},
     )
@@ -262,7 +262,7 @@ def test_simulation_seed_reproducibility(client: TestClient, db_session: Session
 
     # Run 2 with seed=42
     resp2 = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 20, "seed": 42},
     )
@@ -282,7 +282,7 @@ def test_simulation_unseeded(client: TestClient, db_session: Session):
     headers = {"Authorization": f"Bearer {key.key}"}
 
     resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 10},
     )
@@ -306,7 +306,7 @@ def test_simulation_deducts_monthly_quota(client: TestClient, db_session: Sessio
 
     # 1. Run simulation of 50 interactions
     resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 50, "seed": 42},
     )
@@ -345,7 +345,7 @@ def test_simulation_rejected_when_quota_exhausted(client: TestClient, db_session
 
     # 1st simulation consumes the only allowed request
     resp1 = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 10},
     )
@@ -382,7 +382,7 @@ def test_simulation_failure_refunds_quota(client: TestClient, db_session: Sessio
         side_effect=RuntimeError("Simulated internal engine crash"),
     ):
         resp = client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers=headers,
             json={"preset": "education", "num_interactions": 50},
         )
@@ -415,7 +415,7 @@ def test_simulation_persisted_on_post(client: TestClient, db_session: Session):
     headers = {"Authorization": f"Bearer {key.key}"}
 
     resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 10, "seed": 42},
     )
@@ -447,7 +447,7 @@ def test_get_simulation_by_owner(client: TestClient, db_session: Session):
 
     # Execute simulation
     post_resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 10, "seed": 123},
     )
@@ -489,7 +489,7 @@ def test_get_simulation_idor_protection(client: TestClient, db_session: Session)
 
     # User A creates a simulation
     resp_a = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers={"Authorization": f"Bearer {key_a.key}"},
         json={"preset": "education", "num_interactions": 10},
     )
@@ -1124,7 +1124,7 @@ def test_delete_simulation_does_not_refund_quota(client: TestClient, db_session:
 
     # Execute simulation via POST
     post_resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 15},
     )

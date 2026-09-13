@@ -208,7 +208,7 @@ def test_production_lifecycle_all_26_invariants(prod_client, db_session):
 
     # 11. Simulation execution (/v1/simulations)
     sim_resp_1 = prod_client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=api_auth_headers,
         json={
             "preset": "education",
@@ -224,7 +224,7 @@ def test_production_lifecycle_all_26_invariants(prod_client, db_session):
 
     # 12. Deterministic repeat simulation with identical seed
     sim_resp_2 = prod_client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=api_auth_headers,
         json={
             "preset": "education",
@@ -244,7 +244,7 @@ def test_production_lifecycle_all_26_invariants(prod_client, db_session):
     # 14. Failed simulation/refund behavior
     with patch("app.services.simulation.Simulator.from_preset", side_effect=RuntimeError("Engine crash")):
         fail_sim_resp = prod_client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers=api_auth_headers,
             json={
                 "preset": "education",

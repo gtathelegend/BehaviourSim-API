@@ -1,8 +1,8 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, Path as FastPath, Query, Response, status
+from typing import Any, Dict, List, Optional, Union
+from fastapi import APIRouter, Depends, Header, Path as FastPath, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -19,6 +19,7 @@ from app.services.simulation import (
     SUPPORTED_PRESETS,
     execute_simulation,
     normalize_preset_name,
+    validate_simulation_parameters,
 )
 from app.services.simulation_job import (
     ALL_STATUSES,
@@ -104,6 +105,20 @@ class SimulationResponse(BaseModel):
     metadata: SimulationMetadata = Field(..., description="Run provenance and reproducibility metadata")
 
 
+class SimulationPendingResponse(BaseModel):
+    """Accepted simulation job response queued for asynchronous worker processing (HTTP 202 Accepted)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    simulation_id: str = Field(..., description="Unique identifier for the queued simulation run")
+    preset: str = Field(..., description="Canonical preset name used for generation")
+    num_interactions: int = Field(..., description="Number of interactions to simulate")
+    status: str = Field(default="pending", description="Current lifecycle status of the job ('pending')")
+    seed: Optional[int] = Field(None, description="Random seed used, or null if unseeded")
+    created_at: datetime = Field(..., description="Timestamp when the simulation job was created")
+    updated_at: datetime = Field(..., description="Timestamp when the simulation record was last updated")
+
+
 class SimulationDetailResponse(BaseModel):
     """Durable simulation record detail response schema."""
 
@@ -158,18 +173,25 @@ class SimulationHistoryResponse(BaseModel):
 
 @router.post(
     "",
-    response_model=SimulationResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Execute behavioral simulation",
-    description="Authenticate, reserve quota, execute a behavioral simulation, and persist the run and results.",
+    response_model=Union[SimulationResponse, SimulationPendingResponse],
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        200: {"model": SimulationResponse, "description": "Simulation executed synchronously (when sync=true)"},
+        202: {"model": SimulationPendingResponse, "description": "Simulation job accepted and queued for worker execution"},
+    },
+    summary="Request a synthetic simulation run",
+    description="Queue a new simulation run for asynchronous worker execution (HTTP 202 Accepted), or execute synchronously when sync=true.",
     dependencies=[Depends(check_rate_limit)],
 )
 def run_simulation(
     request: SimulationRequest,
+    response: Response,
+    sync: bool = Query(False, description="If true, execute synchronously before responding (transitional compatibility)"),
+    prefer: Optional[str] = Header(None, description="Optional RFC 7240 Prefer header (e.g. 'return=representation' for synchronous execution)"),
     principal: AuthenticatedPrincipal = Depends(get_current_principal),
     db: Session = Depends(get_db),
-) -> SimulationResponse:
-    """Execute a validated simulation run within caller's plan limits and persist the results."""
+) -> Union[SimulationResponse, SimulationPendingResponse]:
+    """Queue a validated simulation run (202 Accepted) or execute synchronously if requested."""
     user = principal.user
     plan = user.plan
     if plan is None:
@@ -178,7 +200,14 @@ def run_simulation(
         plan = get_or_create_free_plan(db)
         user.plan = plan
 
-    # 1. Per-request interaction limit check against user plan
+    # 1. Validate simulation request parameters (preset, profile, initial_state)
+    validate_simulation_parameters(
+        preset=request.preset,
+        profile=request.profile,
+        initial_state=request.initial_state,
+    )
+
+    # 2. Per-request interaction limit check against user plan
     if request.num_interactions > plan.max_interactions_per_request:
         logger.warning(
             "Interaction limit exceeded: user_id=%s requested=%s limit=%s",
@@ -198,27 +227,11 @@ def run_simulation(
 
     user_id = user.id
     api_key_id = principal.api_key.id if principal.api_key else None
+    is_sync = sync or (prefer is not None and "return=representation" in prefer.lower())
 
-    # 2. Enforce plan-specific concurrent simulation limit
-    max_concurrent = plan.max_concurrent_simulations if plan.max_concurrent_simulations else 1
-    if not default_concurrency_limiter.acquire(user_id, max_concurrent):
-        logger.warning(
-            "Concurrent simulation limit reached: user_id=%s limit=%s",
-            user_id,
-            max_concurrent,
-        )
-        raise BehaviorSimAPIError(
-            message=f"Concurrent simulation limit exceeded. Your plan allows {max_concurrent} concurrent simulation.",
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            details={
-                "code": "concurrent_simulation_limit_exceeded",
-                "limit": max_concurrent,
-            },
-            headers={"Retry-After": "5"},
-        )
-
-    try:
-        # 3. Reserve quota atomically before creating job
+    # --- Mode A: Asynchronous Queue (Default, HTTP 202 Accepted) ---
+    if not is_sync:
+        # Atomically reserve quota before job creation
         reserve_usage(
             db=db,
             user=user,
@@ -227,7 +240,7 @@ def run_simulation(
             api_key_id=api_key_id,
         )
 
-        # 4. Create durable simulation job in 'pending' status
+        # Create durable simulation job in 'pending' status
         try:
             job = create_simulation_job(
                 db=db,
@@ -262,7 +275,78 @@ def run_simulation(
                 details={"code": "simulation_persistence_failed"},
             ) from exc
 
-        # 5. Execute simulation through the lifecycle service (pending -> running -> completed)
+        response.status_code = status.HTTP_202_ACCEPTED
+        return SimulationPendingResponse(
+            simulation_id=str(job.id),
+            preset=job.preset,
+            num_interactions=job.num_interactions,
+            status=job.status,
+            seed=job.seed,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+        )
+
+    # --- Mode B: Transitional Synchronous Execution (sync=true, HTTP 200 OK) ---
+    max_concurrent = plan.max_concurrent_simulations if plan.max_concurrent_simulations else 1
+    if not default_concurrency_limiter.acquire(user_id, max_concurrent):
+        logger.warning(
+            "Concurrent simulation limit reached: user_id=%s limit=%s",
+            user_id,
+            max_concurrent,
+        )
+        raise BehaviorSimAPIError(
+            message=f"Concurrent simulation limit exceeded. Your plan allows {max_concurrent} concurrent simulation.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            details={
+                "code": "concurrent_simulation_limit_exceeded",
+                "limit": max_concurrent,
+            },
+            headers={"Retry-After": "5"},
+        )
+
+    try:
+        reserve_usage(
+            db=db,
+            user=user,
+            requested_interactions=request.num_interactions,
+            delta_requests=1,
+            api_key_id=api_key_id,
+        )
+
+        try:
+            job = create_simulation_job(
+                db=db,
+                user=user,
+                preset=request.preset,
+                num_interactions=request.num_interactions,
+                seed=request.seed,
+                profile=request.profile,
+                initial_state=request.initial_state,
+            )
+        except Exception as exc:
+            refund_usage(
+                db=db,
+                user=user,
+                requested_interactions=request.num_interactions,
+                delta_requests=1,
+                user_id=user_id,
+            )
+            record_usage_result(
+                db=db,
+                user=user,
+                event_type="simulation_failed",
+                success=False,
+                interaction_count=0,
+                compute_ms=0,
+                api_key_id=api_key_id,
+                user_id=user_id,
+            )
+            raise BehaviorSimAPIError(
+                message="Failed to persist simulation run. Quota has been refunded.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                details={"code": "simulation_persistence_failed"},
+            ) from exc
+
         completed_job = execute_simulation_job(
             db=db,
             job=job,
@@ -272,6 +356,7 @@ def run_simulation(
         )
 
         settings = get_settings()
+        response.status_code = status.HTTP_200_OK
         return SimulationResponse(
             simulation_id=str(completed_job.id),
             preset=completed_job.preset,
@@ -523,7 +608,24 @@ def delete_simulation(
             },
         )
 
-    # 4. Permanent hard delete (without modifying quota)
+    # 4. If deleting an unexecuted pending job, refund reserved quota
+    if sim.status == STATUS_PENDING:
+        refund_usage(
+            db=db,
+            user_id=sim.user_id,
+            requested_interactions=sim.num_interactions,
+            delta_requests=1,
+        )
+        record_usage_result(
+            db=db,
+            user=principal.user,
+            event_type="simulation_failed",
+            success=False,
+            interaction_count=0,
+            compute_ms=0,
+        )
+
+    # 5. Permanent hard delete
     db.delete(sim)
     db.commit()
 

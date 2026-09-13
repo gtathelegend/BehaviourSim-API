@@ -51,7 +51,7 @@ def test_production_smoke_flow(client: TestClient, db_session: Session):
 
     # 6. POST /v1/simulations
     sim_resp = client.post(
-        "/v1/simulations",
+        "/v1/simulations?sync=true",
         headers=headers,
         json={"preset": "education", "num_interactions": 25, "seed": 42},
     )

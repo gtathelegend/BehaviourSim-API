@@ -135,18 +135,12 @@ def get_preset_metadata(preset_name: str) -> Dict[str, Any]:
     }
 
 
-def execute_simulation(
+def validate_simulation_parameters(
     preset: str,
-    num_interactions: int,
-    seed: Optional[int] = None,
     profile: Optional[str] = None,
     initial_state: Optional[str] = None,
-) -> Tuple[str, List[Dict[str, Any]], int]:
-    """Execute a simulation using public behaviorsim.Simulator and return serializable records.
-
-    Returns:
-        Tuple of (simulation_id: str, data_records: List[Dict[str, Any]], compute_ms: int)
-    """
+) -> str:
+    """Validate preset, profile, and initial_state, returning the canonical preset name."""
     canonical_preset = normalize_preset_name(preset)
     if canonical_preset not in SUPPORTED_PRESETS:
         raise BehaviorSimAPIError(
@@ -182,11 +176,32 @@ def execute_simulation(
             details={
                 "code": "invalid_initial_state",
                 "preset": canonical_preset,
-                "requested_state": initial_state,
+                "requested_initial_state": initial_state,
                 "supported_states": preset_meta["supported_states"],
             },
         )
 
+    return canonical_preset
+
+
+def execute_simulation(
+    preset: str,
+    num_interactions: int,
+    seed: Optional[int] = None,
+    profile: Optional[str] = None,
+    initial_state: Optional[str] = None,
+) -> Tuple[str, List[Dict[str, Any]], int]:
+    """Execute a simulation using public behaviorsim.Simulator and return serializable records.
+
+    Returns:
+        Tuple of (simulation_id: str, data_records: List[Dict[str, Any]], compute_ms: int)
+    """
+    canonical_preset = validate_simulation_parameters(
+        preset=preset,
+        profile=profile,
+        initial_state=initial_state,
+    )
+    preset_meta = SUPPORTED_PRESETS[canonical_preset]
     simulator_kwargs: Dict[str, Any] = {}
     if profile is not None:
         simulator_kwargs["profile"] = profile

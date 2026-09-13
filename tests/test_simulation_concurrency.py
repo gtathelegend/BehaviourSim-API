@@ -69,7 +69,7 @@ def test_concurrent_simulation_quota_enforcement(tmp_path: Path):
         def run_sim_request():
             thread_client = TestClient(app)
             response = thread_client.post(
-                "/v1/simulations",
+                "/v1/simulations?sync=true",
                 headers={"Authorization": f"Bearer {api_key_str}"},
                 json={"preset": "education", "num_interactions": 10, "seed": 42},
             )

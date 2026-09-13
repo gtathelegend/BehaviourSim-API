@@ -583,16 +583,42 @@ When `APP_ENV=production`, the application lifespan executes rigorous validation
 * **Phase 13 Simulation Deletion & Data Lifecycle Foundation**: Authenticated permanent deletion endpoint (`DELETE /v1/simulations/{simulation_id}`), HTTP 204 No Content response, strict caller-scoped ownership isolation (IDOR protection), immediate removal from history and detail endpoints, and preserved quota accounting (no quota refunds on delete).
 * **Phase 14 Reliability, Resource Protection & Concurrency Hardening**: In-memory plan-scoped concurrent simulation limiter, PostgreSQL `with_for_update` row-level API key race serialization, 1 MB request body ceiling middleware (`HTTP 413`), rate limiter memory hygiene/pruning, and rate limiting coverage for API key management routes.
 * **Phase 15 Async Simulation Jobs & Execution Architecture**: Explicit simulation job lifecycle (`pending` → `running` → `completed` / `failed`), Alembic migration `0005_simulation_job_lifecycle` with nullable result columns (`data`, `compute_ms`, `completed_at`) and lifecycle timestamps (`started_at`, `updated_at`, `error_code`, `error_message`), validated state transition machine preventing transitions out of terminal states, running job deletion guard (`HTTP 409 Conflict`), safe failure representation without stack trace leaks, backward-compatible synchronous HTTP contract (`status="completed"` returned on `POST /v1/simulations`), and atomic quota reservation/refund/finalization consistency.
+* **Phase 16 Distributed Job Execution & Worker Architecture**:
+  * **Asynchronous Queue by Default**: `POST /v1/simulations` returns `HTTP 202 Accepted` immediately with `status="pending"`, freeing API request threads from computing long-running simulations.
+  * **Transactional PostgreSQL Queue (`SKIP LOCKED`)**: Jobs are queued in Neon PostgreSQL and claimed atomically via `SELECT ... FOR UPDATE SKIP LOCKED`, guaranteeing exact-once processing, zero worker lock contention, and zero split-brain state without requiring Redis.
+  * **Autonomous Background Worker**: Dedicated entrypoint `python -m app.worker` (`SimulationWorker`) polling and executing jobs outside DB transactions, persisting JSON/JSONB results, and finalizing quota accounting.
+  * **Database-Backed Execution Concurrency**: Distributed concurrency serialization via `SELECT ... FOR UPDATE` on `users` table, strictly enforcing `plan.max_concurrent_simulations` (e.g. Free plan limit of 1 concurrent simulation) across any number of worker processes.
+  * **Stuck-Job Recovery & Retry Safety**: Worker heartbeat tracking (`heartbeat_at`), lease timeout expiration recovery, and automated terminal failure transition with quota refund when `attempt_count >= max_attempts` (default: 3).
+  * **Deletion Semantics**: Running simulations reject deletion (`HTTP 409 Conflict`), while deleting an unexecuted `pending` simulation safely refunds the reserved quota.
+  * **Transitional Synchronous Compatibility**: `POST /v1/simulations?sync=true` and `Prefer: return=representation` header maintain backwards compatibility for synchronous consumers during frontend migration.
 
-## 14. Intentionally Deferred Capabilities
+## 14. Architecture Status: Implemented vs. Scale Requirements
+
+### Currently Implemented
+* Durable PostgreSQL-backed queue using `SKIP LOCKED`
+* Dedicated background worker CLI and execution service (`app/worker.py`, `app/services/worker.py`)
+* Asynchronous `HTTP 202 Accepted` request lifecycle with pending job persistence
+* Transitional synchronous mode (`?sync=true`)
+* Row-lock distributed concurrency enforcement across multiple workers
+* Lease-based stuck-job recovery and retry exhaustion safeguards
+* Alembic migration `0006_worker_job_execution` with compound index `ix_simulations_queue (status, created_at)`
+
+### Deployment & Scale Work Still Required
+* **Render Background Worker Provisioning**: Adding a standalone background worker service to Render Blueprint requires a paid Starter plan ($7/mo) or single-container multi-process configuration.
+* **Website Frontend Polling**: Updating the deployed website (`D:\Projects\BehaviourSim Web`) to handle `HTTP 202 Accepted` and poll `GET /v1/simulations/{id}` until `status="completed"`.
+* **Object Storage (S3)**: For offloading massive simulation result payloads beyond PostgreSQL JSONB limits.
+* **Billing / Subscriptions (Stripe)**: For automated self-service plan upgrades and usage billing.
+
+## 15. Intentionally Deferred Capabilities
 
 The following capabilities are intentionally deferred for subsequent phases:
 * Redis distributed state and distributed rate limiting (required before horizontally scaling API instances > 1)
-* Asynchronous background simulation execution and job queues (Celery)
+* Celery / RabbitMQ external broker infrastructure
 * Object storage integration (S3) for simulation artifact exports
 * Billing and subscription payment processing (Stripe)
+* WebSocket push notifications for job completion
 
-## 15. Production Deployment (Render + Neon)
+## 16. Production Deployment (Render + Neon)
 
 The application is prepared for production deployment with the following architecture:
 * **Web Service / API**: Hosted on **Render** (`api.behaviorsim.vedaangsharma.in`), running FastAPI / Uvicorn.

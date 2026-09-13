@@ -171,7 +171,7 @@ def test_concurrent_simulation_limit_enforced(tmp_path: Path):
 
         # Now an API request from user1 should be rejected with 429
         res = client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers={"Authorization": f"Bearer {key1}"},
             json={
                 "preset": "education",
@@ -186,7 +186,7 @@ def test_concurrent_simulation_limit_enforced(tmp_path: Path):
 
         # But user2 (different user) CAN run a simulation concurrently
         res2 = client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers={"Authorization": f"Bearer {key2}"},
             json={
                 "preset": "education",
@@ -200,7 +200,7 @@ def test_concurrent_simulation_limit_enforced(tmp_path: Path):
 
         # Now user1 can run a simulation
         res3 = client.post(
-            "/v1/simulations",
+            "/v1/simulations?sync=true",
             headers={"Authorization": f"Bearer {key1}"},
             json={
                 "preset": "education",
@@ -264,7 +264,7 @@ def test_simulation_concurrency_release_on_error(tmp_path: Path):
         # Mock execute_simulation to raise an unexpected RuntimeError
         with patch("app.api.v1.simulations.execute_simulation", side_effect=RuntimeError("Sim crashed")):
             res = client.post(
-                "/v1/simulations",
+                "/v1/simulations?sync=true",
                 headers={"Authorization": f"Bearer {key}"},
                 json={
                     "preset": "education",

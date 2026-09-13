@@ -203,10 +203,10 @@ def reserve_usage(
 
 def record_usage_result(
     db: Session,
-    user: User,
-    event_type: str,
-    success: bool,
-    interaction_count: int,
+    user: Optional[User] = None,
+    event_type: str = "",
+    success: bool = True,
+    interaction_count: int = 0,
     compute_ms: Optional[int] = None,
     api_key_id: Optional[uuid.UUID] = None,
     request_id: Optional[str] = None,

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Uuid
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,6 +24,9 @@ class Simulation(Base):
     """Persisted simulation run entity containing execution provenance and bounded result data."""
 
     __tablename__ = "simulations"
+    __table_args__ = (
+        Index("ix_simulations_queue", "status", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -119,6 +122,28 @@ class Simulation(Base):
         DateTime(timezone=True),
         default=utc_now,
         onupdate=utc_now,
+        nullable=False,
+    )
+    worker_id: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
         nullable=False,
     )
 

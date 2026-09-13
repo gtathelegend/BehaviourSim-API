@@ -6,6 +6,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from app.core.middleware import get_current_request_id
 
 logger = logging.getLogger("behaviorsim_api.core.errors")
@@ -30,6 +32,24 @@ class BehaviorSimAPIError(Exception):
 
 def register_error_handlers(app: FastAPI) -> None:
     """Register application-level exception handlers."""
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_http_exception(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        req_id = get_current_request_id() or getattr(request.state, "request_id", None)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "message": str(exc.detail),
+                    "status_code": exc.status_code,
+                    "details": getattr(exc, "details", {}),
+                    "request_id": req_id,
+                }
+            },
+            headers=getattr(exc, "headers", None),
+        )
 
     @app.exception_handler(BehaviorSimAPIError)
     async def handle_behaviorsim_api_error(

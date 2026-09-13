@@ -59,7 +59,7 @@ def get_user_concurrency_capacity(
         select(User).where(User.id == user_id).with_for_update()
     ).scalar_one_or_none()
 
-    if user is None:
+    if user is None or not user.is_active:
         return False
 
     # 2. Resolve plan concurrency limit

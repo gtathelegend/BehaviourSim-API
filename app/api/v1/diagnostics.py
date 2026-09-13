@@ -1,7 +1,7 @@
-"""Operational diagnostics and telemetry endpoints."""
-
 import logging
-from typing import Any, Dict
+import threading
+import time
+from typing import Any, Dict, Tuple
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -16,6 +16,49 @@ from app.services.simulation_job import STATUS_PENDING, STATUS_RUNNING
 logger = logging.getLogger("behaviorsim_api.api.v1.diagnostics")
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
+
+# Thread-safe in-memory cache for queue depth to protect DB from rapid polling
+_queue_cache_lock = threading.Lock()
+_queue_cache_time: float = 0.0
+_queue_cached_counts: Tuple[int, int] = (0, 0)
+QUEUE_CACHE_TTL_SECONDS = 5.0
+
+
+def reset_diagnostics_cache() -> None:
+    """Reset cached queue metrics (useful for testing)."""
+    global _queue_cache_time, _queue_cached_counts
+    with _queue_cache_lock:
+        _queue_cache_time = 0.0
+        _queue_cached_counts = (0, 0)
+
+
+def get_cached_queue_counts(db: Session, ttl: float = QUEUE_CACHE_TTL_SECONDS) -> Tuple[int, int]:
+    """Retrieve queue counts with in-memory TTL caching to prevent DB connection exhaustion."""
+    global _queue_cache_time, _queue_cached_counts
+    now = time.time()
+    with _queue_cache_lock:
+        if (now - _queue_cache_time) < ttl:
+            return _queue_cached_counts
+
+    # Query fresh counts outside lock
+    pending_count = (
+        db.execute(
+            select(func.count(Simulation.id)).where(Simulation.status == STATUS_PENDING)
+        ).scalar()
+        or 0
+    )
+    running_count = (
+        db.execute(
+            select(func.count(Simulation.id)).where(Simulation.status == STATUS_RUNNING)
+        ).scalar()
+        or 0
+    )
+
+    with _queue_cache_lock:
+        _queue_cached_counts = (pending_count, running_count)
+        _queue_cache_time = now
+
+    return pending_count, running_count
 
 
 class QueueStatus(BaseModel):
@@ -45,20 +88,7 @@ def get_diagnostics(db: Session = Depends(get_db)) -> DiagnosticsResponse:
     """Return operational metrics summary and current queue backlog."""
     settings = get_settings()
 
-    # Query current queue depth safely
-    pending_count = (
-        db.execute(
-            select(func.count(Simulation.id)).where(Simulation.status == STATUS_PENDING)
-        ).scalar()
-        or 0
-    )
-    running_count = (
-        db.execute(
-            select(func.count(Simulation.id)).where(Simulation.status == STATUS_RUNNING)
-        ).scalar()
-        or 0
-    )
-
+    pending_count, running_count = get_cached_queue_counts(db)
     metrics_summary = operational_metrics.get_summary()
 
     return DiagnosticsResponse(

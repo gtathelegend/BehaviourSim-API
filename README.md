@@ -635,3 +635,20 @@ Key operational resources:
 * **Database Verification**: Safe diagnostic connectivity script available at [`scripts/verify_db_connectivity.py`](scripts/verify_db_connectivity.py).
 * **Authoritative Runbook**: Step-by-step instructions for Neon project creation, environment configuration, DNS setup, database migrations, and operational maintenance are detailed in:
   * [DEPLOYMENT.md](DEPLOYMENT.md)
+
+## 17. Phase 20: Capacity & Scalability Engineering
+
+An empirical capacity evaluation established that the current architecture (`FastAPI` + `PostgreSQL FOR UPDATE SKIP LOCKED` + `Background Worker`) operates with high efficiency and substantial headroom:
+
+* **Engine Compute Dominance**: Pure simulation compute accounts for **85.6% – 93.0%** of execution time, while database queue claiming requires **$< 2\text{ ms}$**.
+* **Worker Throughput**: A single background worker processes **$\sim 25\text{ simulations/second}$** (for standard $1,000$-interaction workloads), delivering **$1,500\text{ simulations/minute}$** or **$90,000\text{ simulations/hour}$**.
+* **Queue Ingestion**: PostgreSQL handles bursts of **$2,053\text{ jobs/second}$** ($0.48\text{ ms/job}$) with zero lock contention.
+* **Component Micro-Benchmarks**:
+  * Diagnostics 5s TTL Cache: **$1,751,000\text{ calls/second}$** ($0.0006\text{ ms/call}$).
+  * In-Memory Rate Limiter: **$384,000\text{ checks/second}$** ($0.0026\text{ ms/check}$).
+  * Quota Atomic Row-Locking: **$846\text{ reservations/second}$** ($1.18\text{ ms/res}$).
+* **Architecture Decision**: **Option A — Current Architecture Sufficient**. No external queue (Redis/Celery/Kafka) or object storage (S3) is required for near-to-medium term scale.
+
+For detailed empirical measurements, mathematical capacity formulas, and scaling triggers, see:
+* [docs/capacity.md](docs/capacity.md)
+

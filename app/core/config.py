@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     SIMULATION_RETENTION_DAYS: int = 7
     SIMULATION_CLEANUP_BATCH_SIZE: int = 100
 
+    # In-process Simulation Worker Thread (Render single-instance tier)
+    RUN_WORKER_THREAD: bool = False
+
     @field_validator("SIMULATION_RETENTION_DAYS")
     @classmethod
     def validate_retention_days(cls, value: int) -> int:

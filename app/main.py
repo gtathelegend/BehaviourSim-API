@@ -1,6 +1,7 @@
 """BehaviorSim API entrypoint and application factory."""
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -17,6 +18,7 @@ from app.core.middleware import (
     RequestBodyLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.worker import SimulationWorker
 
 logger = logging.getLogger("behaviorsim_api")
 
@@ -46,9 +48,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Verify BehaviorSim dependency at startup
     verify_behaviorsim_dependency()
 
+    # Conditionally launch managed background worker daemon thread
+    worker: SimulationWorker | None = None
+    worker_thread: threading.Thread | None = None
+    if settings.RUN_WORKER_THREAD:
+        try:
+            worker = SimulationWorker(poll_interval=1.0)
+            worker_thread = threading.Thread(
+                target=worker.run,
+                kwargs={"register_signals": False},
+                name="simulation-worker-daemon",
+                daemon=True,
+            )
+            worker_thread.start()
+            logger.info("Started background SimulationWorker daemon thread (%s)", worker.worker_id)
+        except Exception as exc:
+            logger.error("Failed to start background simulation worker: %s", exc, exc_info=True)
+
     yield
 
     logger.info("Shutting down %s", settings.APP_NAME)
+    if worker is not None and worker_thread is not None:
+        worker.request_stop()
+        worker_thread.join(timeout=3.0)
+
     # Cleanly close pooled database connections on container termination
     from app.db.session import _engine
     if _engine is not None:

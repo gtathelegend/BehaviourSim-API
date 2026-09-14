@@ -359,3 +359,34 @@ class TestDiagnosticsEndpointAndSecurity:
         assert data["error"]["request_id"] == custom_req_id
         # No stack trace
         assert "traceback" not in resp.text.lower()
+
+
+class TestWorkerLifespanDaemon:
+    """Verify in-process worker daemon thread startup, execution, and graceful shutdown."""
+
+    def test_lifespan_starts_and_stops_worker_thread(self):
+        import threading
+        from fastapi.testclient import TestClient
+        from app.core.config import get_settings
+        from app.main import create_app
+
+        settings = get_settings()
+        original_flag = settings.RUN_WORKER_THREAD
+        try:
+            settings.RUN_WORKER_THREAD = True
+            test_app = create_app()
+            worker_t = None
+            with TestClient(test_app) as client:
+                resp = client.get("/health")
+                assert resp.status_code == 200
+                for t in threading.enumerate():
+                    if t.name == "simulation-worker-daemon":
+                        worker_t = t
+                        break
+                assert worker_t is not None, "Worker thread should be running"
+
+            # After exiting context manager, wait up to 5.0s for the network worker to terminate
+            worker_t.join(timeout=5.0)
+            assert not worker_t.is_alive(), "Worker thread must terminate cleanly on shutdown"
+        finally:
+            settings.RUN_WORKER_THREAD = original_flag

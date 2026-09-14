@@ -75,6 +75,10 @@ services:
       - key: SIMULATION_CLEANUP_BATCH_SIZE
         value: "100"
 
+      # In-Process Simulation Worker Daemon (Render single-instance tier)
+      - key: RUN_WORKER_THREAD
+        value: "true"
+
       # Sensitive OAuth Credentials (Must be provided via Render Dashboard / sync: false)
       - key: GOOGLE_CLIENT_ID
         sync: false

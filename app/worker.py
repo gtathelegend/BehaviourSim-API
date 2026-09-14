@@ -46,6 +46,8 @@ class SimulationWorker:
             True if a job was found and processed (success or handled failure),
             False if no eligible jobs were available in the queue.
         """
+        if self._stop_requested:
+            return False
         try:
             with self.session_factory() as session:
                 job = claim_next_job(
@@ -82,7 +84,7 @@ class SimulationWorker:
             )
             return False
 
-    def run(self) -> None:
+    def run(self, register_signals: bool = True) -> None:
         """Main execution loop polling for jobs until termination signal is caught."""
         logger.info(
             "Starting SimulationWorker %s (poll_interval=%ss, lease_timeout=%ss)",
@@ -91,16 +93,25 @@ class SimulationWorker:
             self.lease_timeout,
         )
 
-        # Register termination handlers
-        signal.signal(signal.SIGINT, self.request_stop)
-        signal.signal(signal.SIGTERM, self.request_stop)
+        # Register termination handlers if requested and supported
+        if register_signals:
+            try:
+                signal.signal(signal.SIGINT, self.request_stop)
+                signal.signal(signal.SIGTERM, self.request_stop)
+            except (ValueError, AttributeError):
+                # Signals can only be registered in the main thread of the main interpreter
+                pass
 
         try:
             while not self._stop_requested:
                 try:
                     did_work = self.run_once()
                     if not did_work and not self._stop_requested:
-                        time.sleep(self.poll_interval)
+                        # Interruptible sleep in 0.1s increments for responsive shutdown
+                        elapsed = 0.0
+                        while elapsed < self.poll_interval and not self._stop_requested:
+                            time.sleep(0.1)
+                            elapsed += 0.1
                 except Exception as loop_exc:
                     logger.error(
                         "Worker %s loop error: %s (sleeping 2s before retry)",
@@ -108,7 +119,10 @@ class SimulationWorker:
                         loop_exc,
                         exc_info=True,
                     )
-                    time.sleep(2.0)
+                    elapsed = 0.0
+                    while elapsed < 2.0 and not self._stop_requested:
+                        time.sleep(0.1)
+                        elapsed += 0.1
         finally:
             logger.info("SimulationWorker %s stopped cleanly.", self.worker_id)
 

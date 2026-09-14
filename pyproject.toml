@@ -8,6 +8,16 @@ version = "0.1.0"
 description = "Production-quality backend API for BehaviorSim simulation platform"
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+    { name = "Vedaang Sharma", email = "info@vedaangsharma.in" }
+]
+license = { text = "MIT" }
+
+[project.urls]
+Homepage = "https://github.com/gtathelegend/BehaviourSim-API"
+Repository = "https://github.com/gtathelegend/BehaviourSim-API"
+Issues = "https://github.com/gtathelegend/BehaviourSim-API/issues"
+
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.28.0",

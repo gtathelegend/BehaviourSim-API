@@ -20,6 +20,23 @@ def get_current_request_id() -> str:
     return request_id_ctx_var.get()
 
 
+def get_route_category(path: str) -> str:
+    """Map URL path to a bounded, low-cardinality route category."""
+    if path.startswith("/v1/simulations"):
+        return "simulations"
+    if path.startswith("/v1/presets"):
+        return "presets"
+    if path.startswith("/v1/auth"):
+        return "auth"
+    if path.startswith("/v1/account"):
+        return "account"
+    if path.startswith("/v1/diagnostics"):
+        return "diagnostics"
+    if path in ("/health", "/ready"):
+        return "health"
+    return "other"
+
+
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """Middleware to extract or generate and propagate X-Request-ID correlation headers with metrics and structured logging."""
 
@@ -44,12 +61,14 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             duration_ms = (time.time() - start_time) * 1000
             response.headers["X-Request-ID"] = request_id
 
-            # Record operational metrics
+            # Record operational metrics with low-cardinality route category
+            route_cat = get_route_category(request.url.path)
             operational_metrics.record_request(
                 method=request.method,
                 path=request.url.path,
                 status_code=response.status_code,
                 duration_ms=duration_ms,
+                route_category=route_cat,
             )
 
             # Log structured access event (omitting sensitive query parameters or body payloads)

@@ -139,6 +139,8 @@ def reserve_usage(
     result = db.execute(stmt)
     if result.rowcount == 0:
         db.refresh(usage)
+        from app.core.metrics import operational_metrics
+        operational_metrics.record_quota_exhausted()
         if usage.request_count + delta_requests > plan.monthly_requests:
             logger.info(
                 "Monthly request quota exhausted: user_id=%s current=%s delta=%s limit=%s",

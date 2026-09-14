@@ -164,6 +164,7 @@ def claim_next_job(
                 )
                 db.commit()
                 operational_metrics.record_simulation_failed("execution_timeout")
+                operational_metrics.record_simulation_exhausted_retries()
                 continue  # Inspect next candidate
 
             # Stuck job with attempts remaining: verify user concurrency before re-claiming
@@ -179,6 +180,8 @@ def claim_next_job(
             db.add(job)
             db.commit()
             db.refresh(job)
+            operational_metrics.record_simulation_recovered()
+            operational_metrics.record_simulation_started()
             logger.info(
                 "Worker %s recovered stuck job id=%s (attempt %s/%s)",
                 worker_id,
@@ -240,6 +243,7 @@ def claim_next_job(
             db.add(job)
             db.commit()
             db.refresh(job)
+            operational_metrics.record_simulation_started()
             logger.info(
                 "Worker %s claimed job id=%s (attempt %s/%s)",
                 worker_id,
@@ -386,6 +390,7 @@ def process_claimed_job(
         operational_metrics.record_simulation_completed(
             compute_ms=compute_ms or 0,
             queue_wait_ms=queue_wait_ms,
+            num_interactions=num_interactions,
         )
         logger.info(
             "Job id=%s completed successfully in %sms (queue_wait=%sms)",

@@ -19,7 +19,7 @@ Phases 16–19 introduced durable asynchronous simulation execution, operational
 1. **Engine Compute Dominance**: For simulations with $\ge 1,000$ interactions, engine compute (`behaviorsim.simulate`) consumes **$85.6\%$ to $93.0\%$** of total end-to-end execution time. Submission and queue claiming overhead are negligible ($< 2\text{ ms}$ combined).
 2. **Simulation Throughput**: A single background worker processes **$24,000$ to $29,000$ interactions/second** on standard commodity hardware, translating to **$\sim 25$ jobs/sec** for standard $1,000$-interaction workloads ($1,500\text{ jobs/min}$, or $90,000\text{ jobs/hour}$).
 3. **Multi-Process vs Multi-Thread Worker Scaling**: Python Global Interpreter Lock (GIL) constrains compute-heavy workers to a single core per process. Multi-process worker scaling delivers **$96.4\%$ scaling efficiency** at 2 processes and scales to **$38,261\text{ interactions/sec}$** across 4 processes.
-4. **Queue Burst Ingestion**: PostgreSQL handles burst enqueues at **$2,053.8\text{ jobs/sec}$** ($0.48\text{ ms/job}$) with zero lock contention.
+4. **Queue Burst Ingestion**: PostgreSQL handled burst enqueues at **$2,053.8\text{ jobs/sec}$** ($0.48\text{ ms/job}$) with zero lock contention. Submission ingestion exceeded worker service capacity by a large margin; sustained queue growth is therefore determined by worker throughput, not enqueue throughput.
 5. **Component Micro-benchmarks**:
    - **Diagnostics Cache**: $1,751,006\text{ calls/sec}$ ($0.0006\text{ ms/call}$) under 5-second TTL cache.
    - **In-Memory Rate Limiter**: $384,911\text{ checks/sec}$ ($0.0026\text{ ms/check}$).
@@ -81,7 +81,7 @@ $$\begin{array}{|l|r|r|r|r|}
 
 ### 4.1 Concurrent Job Submission & Execution ($n=1,000$ interactions)
 
-Evaluating API concurrent submission and worker handling across 1, 2, 4, 8, and 16 concurrent requests:
+Evaluating API concurrent submission and worker handling across 1, 2, 4, 8, and 16 concurrent requests ($\ge 16$ concurrent submissions were tested successfully):
 
 | Concurrency | Total Elapsed | Job Throughput | Interaction Throughput | Latency p50 | Latency p95 | Latency p99 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -91,7 +91,7 @@ Evaluating API concurrent submission and worker handling across 1, 2, 4, 8, and 
 | **8** | 0.330 s | 24.27 jobs/s | 24,273 inter/s | 41.2 ms | 45.2 ms | 45.2 ms |
 | **16** | 0.652 s | 24.56 jobs/s | 24,557 inter/s | 40.3 ms | 44.3 ms | 44.3 ms |
 
-**Observation**: Throughput stabilizes at $\sim 24.5\text{ jobs/sec}$ ($24,500\text{ inter/s}$) per single process. Latency p50 and p95 remain tightly bounded ($40.3\text{ ms}$ to $52.9\text{ ms}$), demonstrating no tail latency explosion under concurrent submissions.
+**Observation**: Throughput stabilizes at $\sim 24.5\text{ jobs/sec}$ ($24,500\text{ inter/s}$) per single process. Latency p50 and p95 remain tightly bounded ($40.3\text{ ms}$ to $52.9\text{ ms}$), demonstrating no tail latency explosion under concurrent submissions up to the 16 concurrent requests tested.
 
 ### 4.2 Multi-Worker Process Scaling (Bypassing Python GIL)
 
@@ -107,13 +107,14 @@ Because `behaviorsim` execution is pure CPU-bound Python, multi-threading within
 
 ---
 
-## 5. Queue Saturation & Burst Overload
+## 5. Queue Ingestion vs. Worker Service Rate
 
-A stress burst of 50 simultaneous simulation jobs was submitted to evaluate queue ingestion rate and drain throughput:
+A stress burst of 50 simultaneous simulation jobs was submitted to evaluate queue ingestion rate versus drain throughput:
 
 - **Burst Enqueue Rate**: $50\text{ jobs in } 0.024\text{ seconds} \implies \mathbf{2,053.8\text{ jobs/sec}}$ ($0.48\text{ ms/job}$).
 - **Burst Drain Rate (Single Worker)**: $50\text{ jobs drained in } 0.723\text{ seconds} \implies \mathbf{69.2\text{ jobs/sec}}$ (at $100\text{ inter/job}$).
 - **Queue Claiming Overhead under Depth**: As queue depth rose from 0 to 50, claim latency remained flat at $\sim 1.3\text{ ms}$, confirming that the `simulations_status_created_idx` index on `(status, created_at)` performs $O(\log N)$ lookups without scanning pending rows.
+- **Capacity Implication**: Submission ingestion exceeded worker service capacity by a large margin; sustained queue growth is therefore governed by worker processing throughput, not enqueue ingestion throughput.
 
 ---
 

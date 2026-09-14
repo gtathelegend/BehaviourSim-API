@@ -42,6 +42,14 @@ class OperationalMetrics:
             self._queue_wait_min_ms: Optional[int] = None
             self._queue_wait_max_ms: Optional[int] = None
 
+            # Data Lifecycle & Retention Metrics
+            self._cleanup_runs_total = 0
+            self._cleanup_simulations_deleted_total = 0
+            self._cleanup_failures_total = 0
+            self._cleanup_duration_total_ms = 0.0
+            self._cleanup_last_run_at: Optional[float] = None
+            self._cleanup_last_deleted_count: int = 0
+
     def record_request(
         self,
         method: str,
@@ -110,6 +118,23 @@ class OperationalMetrics:
                 self._simulations_failed_by_code.get(code, 0) + 1
             )
 
+    def record_cleanup_run(
+        self,
+        deleted_count: int,
+        duration_ms: float,
+        success: bool = True,
+    ) -> None:
+        """Record an execution of simulation retention data cleanup."""
+        with self._lock:
+            self._cleanup_runs_total += 1
+            self._cleanup_last_run_at = time.time()
+            self._cleanup_duration_total_ms += duration_ms
+            if success:
+                self._cleanup_simulations_deleted_total += deleted_count
+                self._cleanup_last_deleted_count = deleted_count
+            else:
+                self._cleanup_failures_total += 1
+
     def get_summary(self) -> Dict[str, Any]:
         """Generate a complete operational metrics snapshot dictionary."""
         with self._lock:
@@ -155,6 +180,14 @@ class OperationalMetrics:
                         "max": self._queue_wait_max_ms or 0,
                         "avg": avg_queue_wait_ms,
                     },
+                },
+                "retention": {
+                    "cleanup_runs_total": self._cleanup_runs_total,
+                    "simulations_deleted_total": self._cleanup_simulations_deleted_total,
+                    "cleanup_failures_total": self._cleanup_failures_total,
+                    "last_run_at": self._cleanup_last_run_at,
+                    "last_deleted_count": self._cleanup_last_deleted_count,
+                    "total_duration_ms": round(self._cleanup_duration_total_ms, 2),
                 },
             }
 

@@ -59,6 +59,24 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # Simulation Data Lifecycle & Retention Settings
+    SIMULATION_RETENTION_DAYS: int = 7
+    SIMULATION_CLEANUP_BATCH_SIZE: int = 100
+
+    @field_validator("SIMULATION_RETENTION_DAYS")
+    @classmethod
+    def validate_retention_days(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("SIMULATION_RETENTION_DAYS must be a positive integer (>= 1)")
+        return value
+
+    @field_validator("SIMULATION_CLEANUP_BATCH_SIZE")
+    @classmethod
+    def validate_cleanup_batch_size(cls, value: int) -> int:
+        if value < 1 or value > 1000:
+            raise ValueError("SIMULATION_CLEANUP_BATCH_SIZE must be between 1 and 1000")
+        return value
+
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:

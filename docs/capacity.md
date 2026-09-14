@@ -159,11 +159,26 @@ Assuming an average simulation size of $2,000$ interactions ($384\text{ KB}$ pay
 | **500 sims / day** | 192.0 MB / day | 5.76 GB / month | 70.1 GB / year | 2.6 days | 1.7 months |
 | **2,000 sims / day** | 768.0 MB / day | 23.0 GB / month | 280.3 GB / year | 16 hours | 13 days |
 
-**Retention Policy Recommendation**:
-1. Free Tier simulations: Store full interaction JSON for **7 days**, retaining aggregated summary metadata indefinitely.
-2. Pro Tier simulations: Retain full results for **30 days**.
-3. Deletion API (`DELETE /v1/simulations/{id}` implemented in Phase 13) allows users to reclaim space immediately.
-4. If daily volume exceeds $1,000\text{ sims/day}$, offloading full interaction JSON to S3-compatible object storage (Cloudflare R2 / AWS S3) becomes cost-efficient. Until then, PostgreSQL `JSONB` with gzip compression/retention is optimal.
+### 7.3 Phase 21 Implemented Lifecycle & Steady-State Model
+
+Phase 21 implemented automated bounded batch retention cleanup (`app.services.retention` and `app.cleanup`). By pruning simulations older than $R_{\text{days}}$ ($R = 7$ default), database growth transitions from unbounded linear growth to bounded **steady-state equilibrium**:
+
+$$S_{\text{steady-state}} = R_{\text{days}} \times V_{\text{daily}} \times S_{\text{payload}}$$
+
+#### Steady-State Storage Footprint Under 7-Day vs. 30-Day Retention
+
+| Daily Volume ($V_{\text{daily}}$) | Average Simulation Size | Unbounded Annual Growth | Steady-State (7-Day Retention) | Steady-State (30-Day Retention) | Neon Free Tier ($500\text{ MB}$) Compatibility |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **50 sims / day** | 1k inter ($192\text{ KB}$) | 3.50 GB / year | **67.2 MB** | 288.0 MB | **Indefinite (13.4% capacity)** |
+| **100 sims / day** | 1k inter ($192\text{ KB}$) | 7.01 GB / year | **134.4 MB** | 576.0 MB | **Indefinite (26.9% capacity)** |
+| **250 sims / day** | 1k inter ($192\text{ KB}$) | 17.52 GB / year | **336.0 MB** | 1.44 GB | **Indefinite (67.2% capacity)** |
+| **500 sims / day** | 1k inter ($192\text{ KB}$) | 35.04 GB / year | **672.0 MB** | 2.88 GB | Requires Neon Starter ($10\text{ GB}$) |
+| **1,000 sims / day**| 1k inter ($192\text{ KB}$) | 70.08 GB / year | **1.34 GB** | 5.76 GB | Requires Neon Starter ($10\text{ GB}$) |
+
+**Key Takeaways**:
+1. With 7-day retention active, the free tier of Neon ($500\text{ MB}$) provides **indefinite runway** for up to $370\text{ simulations/day}$, completely solving unbounded growth without object storage.
+2. Quota usage records are stored separately in `monthly_usage` and are strictly preserved across retention cleanup.
+3. Expired simulation records are pruned in bounded batches of 100 rows per transaction without loading result payloads into application memory.
 
 ---
 

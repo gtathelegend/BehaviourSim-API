@@ -652,3 +652,19 @@ An empirical capacity evaluation established that the current architecture (`Fas
 For detailed empirical measurements, mathematical capacity formulas, and scaling triggers, see:
 * [docs/capacity.md](docs/capacity.md)
 
+## 18. Phase 21: Production Operations & Data Lifecycle
+
+To prevent unbounded database growth and maintain steady-state storage equilibrium, Phase 21 implements an automated simulation data retention and lifecycle management system:
+
+* **Retention Policy**: Completed and failed simulations are retained for a configurable window (`SIMULATION_RETENTION_DAYS`, default `7` days).
+* **Active Job Protection**: Active jobs (`pending`, `running`) are strictly protected and never touched by retention cleanup.
+* **Quota Invariant**: Automated retention **never refunds quota**. User usage records are preserved in `monthly_usage`.
+* **Memory-Safe Bounded Batches**: Cleanups select only primary key UUIDs and execute in bounded batches (default `100` rows per transaction), preventing multi-megabyte JSON payloads from loading into application memory.
+* **Concurrency Safety**: Leverages PostgreSQL `FOR UPDATE SKIP LOCKED` so multiple cleanup processes can run concurrently without collision or deadlock.
+* **Operator CLI**: Safe operator invocation via CLI:
+  ```bash
+  poetry run python -m app.cleanup [--dry-run] [--retention-days 7] [--batch-size 100]
+  ```
+* **Observability**: Execution counts, duration, and deletion volumes are tracked in `OperationalMetrics` and exposed in `GET /v1/diagnostics`.
+
+

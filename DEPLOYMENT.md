@@ -349,3 +349,128 @@ The following architectural components are planned for subsequent phases:
 * **Asynchronous Simulation Workers**: Celery/Redis worker fleet for long-running simulation jobs and Monte Carlo parameter sweeps.
 * **Object Storage (S3 / Cloudflare R2)**: Storage of simulation parquet/CSV export files.
 * **Stripe Billing Integration**: Automated tier upgrades from Free to Pro/Enterprise.
+
+---
+
+## 17. Automated Simulation Retention & Cleanup Scheduling (Render Cron)
+
+To prevent unbounded database growth and maintain steady-state storage equilibrium on Neon, Phase 22 defines an automated, scheduled background cleanup job using Render Cron.
+
+### 17.1 Architecture & Scheduling Decision (Option A: Render Cron)
+
+```text
+Render Cron Service (02:00 UTC Daily)
+         │
+         │ Ephemeral Container Launch
+         ▼
+python -m app.cleanup (CLI Entrypoint)
+         │
+         │ Batch Deletion (100 rows/batch, FOR UPDATE SKIP LOCKED)
+         ▼
+PostgreSQL / Neon (Deletes expired 'completed'/'failed' records)
+         │
+         ▼
+PostgreSQL autovacuum (Reclaims dead tuples, marks pages reusable)
+```
+
+- **Scheduler**: Render Cron Job (`type: cron` in `render.yaml`).
+- **Cadence**: Daily at **02:00 UTC** (`0 2 * * *`). Running once per day during off-peak hours provides bounded batch execution, zero interference with peak daytime traffic, and avoids spinning up ephemeral containers when 0 rows are eligible.
+- **Runtime**: Ephemeral container spun up on schedule, runs the cleanup command, and terminates upon completion. Billed strictly for the seconds of active execution.
+- **No In-Process Scheduler**: Avoids running persistent scheduler threads in the web server process, eliminating memory leak risks, duplicated executions across multiple web workers/restarts, and lifecycle coupling.
+
+### 17.2 Configuration
+
+#### Option A: Automatic Provisioning via Render Blueprint (`render.yaml`)
+The job is defined in `render.yaml`:
+```yaml
+- type: cron
+  name: behaviorsim-cleanup
+  runtime: python
+  region: oregon
+  schedule: "0 2 * * *"
+  buildCommand: "pip install -e ."
+  startCommand: "python -m app.cleanup"
+  envVars:
+    - key: DATABASE_URL
+      fromService:
+        type: web
+        name: behaviorsim-api
+        envVarKey: DATABASE_URL
+    - key: APP_ENV
+      value: production
+    - key: LOG_LEVEL
+      value: "INFO"
+    - key: SIMULATION_RETENTION_DAYS
+      value: "7"
+    - key: SIMULATION_CLEANUP_BATCH_SIZE
+      value: "100"
+```
+
+#### Option B: Manual Render Dashboard Setup
+If configuring manually in the Render Dashboard:
+1. Navigate to **New +** $\to$ **Cron Job**.
+2. Connect the `behaviorsim-api` repository.
+3. Configure settings:
+   - **Name**: `behaviorsim-cleanup`
+   - **Region**: `Oregon` (same region as Web Service & Neon database)
+   - **Schedule**: `0 2 * * *` (Daily at 02:00 UTC)
+   - **Build Command**: `pip install -e .`
+   - **Command**: `python -m app.cleanup`
+4. In the **Environment** tab, set:
+   - `DATABASE_URL`: Paste the Neon connection string (`sslmode=require`).
+   - `APP_ENV`: `production`
+   - `LOG_LEVEL`: `INFO`
+   - `SIMULATION_RETENTION_DAYS`: `7`
+   - `SIMULATION_CLEANUP_BATCH_SIZE`: `100`
+
+### 17.3 Operator Manual Procedure & Dry-Run Verification
+
+Before changing production retention parameters or after major maintenance, operators should execute a dry-run:
+
+```bash
+# Dry run: evaluates eligibility and calculates cutoff without deleting any rows
+poetry run python -m app.cleanup --dry-run
+
+# Custom retention dry run:
+poetry run python -m app.cleanup --dry-run --retention-days 14
+```
+
+Example Dry-Run Output:
+```text
+=================================================================
+      BehaviorSim Simulation Data Retention Cleanup
+=================================================================
+Mode:            DRY RUN (No changes)
+Retention Days:  7 days
+Batch Size:      100 rows / transaction
+-----------------------------------------------------------------
+Execution Results:
+  Cutoff (UTC):     2026-09-07T02:00:00.000000+00:00
+  Eligible Rows:    42
+  Deleted Rows:     0
+  Batches Executed: 0
+  Duration:         3.45 ms
+=================================================================
+```
+
+### 17.4 Production Safety & Invariants
+
+1. **Zero Quota Refunds**: Automated retention cleanup **never alters or refunds quota**. Quota records in `monthly_usage` track resource consumption at execution time and remain permanent.
+2. **Active Job Protection**: Simulations with status `pending` or `running` are strictly protected and never deleted by retention cleanup, regardless of age.
+3. **Bounded Batches**: Deletions execute in bounded batches of 100 rows per transaction. Each batch commits independently to keep lock durations under 100ms.
+4. **Memory Safety**: Only primary key UUIDs are queried into memory. Massive simulation result JSON payloads are deleted directly in the database without being transferred through Python.
+5. **Concurrency Safety**: On PostgreSQL, queries use `FOR UPDATE SKIP LOCKED`. If two cleanup runs overlap (e.g. an automated cron and a manual operator run), they operate on non-overlapping sets of candidate rows with zero deadlock.
+6. **Failure Semantics**: The process exits with code `1` on unhandled failure so Render registers a failed job and generates alerts. Committed batches remain committed. Empty runs (`eligible=0, deleted=0`) exit cleanly with code `0`.
+7. **Argument Validation**: CLI strictly validates `retention_days >= 1` and `1 <= batch_size <= 1000`, exiting with code `2` before attempting database connection if invalid values are supplied.
+
+### 17.5 Retention Parameter Changes
+
+- **Shortening Retention (e.g. 30 $\to$ 7 days)**: The next scheduled cleanup execution will identify and delete all completed/failed simulations between 7 and 30 days old.
+- **Lengthening Retention (e.g. 7 $\to$ 30 days)**: Increasing retention only protects data currently residing in the database. **Previously deleted simulations cannot be recovered.**
+
+### 17.6 Storage Lifecycle & Autovacuum
+
+1. Executing `DELETE` removes table tuples logically and writes dead tuples.
+2. PostgreSQL's background `autovacuum` daemon periodically cleans dead tuples and adds space to the Free Space Map (FSM).
+3. Subsequent `INSERT` operations reuse this freed space.
+4. Physical disk allocation reported in provider dashboards may not immediately drop, but the database will not grow linearly because daily inserts overwrite daily pruned pages.

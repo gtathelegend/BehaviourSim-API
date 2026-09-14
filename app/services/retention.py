@@ -115,8 +115,8 @@ def cleanup_expired_simulations(
 
     if actual_retention_days < 1:
         raise ValueError(f"retention_days must be >= 1, got {actual_retention_days}")
-    if actual_batch_size < 1:
-        raise ValueError(f"batch_size must be >= 1, got {actual_batch_size}")
+    if actual_batch_size < 1 or actual_batch_size > 1000:
+        raise ValueError(f"batch_size must be between 1 and 1000, got {actual_batch_size}")
 
     cutoff = ensure_utc(cutoff_override) if cutoff_override else get_retention_cutoff(actual_retention_days)
 

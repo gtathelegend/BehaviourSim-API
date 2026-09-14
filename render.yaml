@@ -69,6 +69,12 @@ services:
       - key: LOG_LEVEL
         value: "INFO"
 
+      # Simulation Retention & Lifecycle Configuration
+      - key: SIMULATION_RETENTION_DAYS
+        value: "7"
+      - key: SIMULATION_CLEANUP_BATCH_SIZE
+        value: "100"
+
       # Sensitive OAuth Credentials (Must be provided via Render Dashboard / sync: false)
       - key: GOOGLE_CLIENT_ID
         sync: false
@@ -78,3 +84,30 @@ services:
         sync: false
       - key: GITHUB_CLIENT_SECRET
         sync: false
+
+  # ==============================================================================
+  # Scheduled Retention Cleanup Job (Render Cron)
+  # Docs: https://render.com/docs/cronjobs
+  # Runs daily at 02:00 UTC to prune expired simulation records from PostgreSQL
+  # ==============================================================================
+  - type: cron
+    name: behaviorsim-cleanup
+    runtime: python
+    region: oregon
+    schedule: "0 2 * * *"
+    buildCommand: "pip install -e ."
+    startCommand: "python -m app.cleanup"
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: behaviorsim-api
+          envVarKey: DATABASE_URL
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: "INFO"
+      - key: SIMULATION_RETENTION_DAYS
+        value: "7"
+      - key: SIMULATION_CLEANUP_BATCH_SIZE
+        value: "100"

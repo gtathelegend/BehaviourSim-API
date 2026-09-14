@@ -46,8 +46,9 @@ def test_render_blueprint_validity_and_safety():
 
     # 2. Services section
     assert "services" in spec
-    assert len(spec["services"]) == 1
-    svc_spec = spec["services"][0]
+    web_services = [s for s in spec["services"] if s.get("type") == "web"]
+    assert len(web_services) == 1, "Must contain exactly one web service"
+    svc_spec = web_services[0]
     assert svc_spec["type"] == "web"
     assert svc_spec["name"] == "behaviorsim-api"
     assert svc_spec["runtime"] == "python"

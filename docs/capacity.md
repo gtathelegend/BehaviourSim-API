@@ -180,6 +180,26 @@ $$S_{\text{steady-state}} = R_{\text{days}} \times V_{\text{daily}} \times S_{\t
 2. Quota usage records are stored separately in `monthly_usage` and are strictly preserved across retention cleanup.
 3. Expired simulation records are pruned in bounded batches of 100 rows per transaction without loading result payloads into application memory.
 
+### 7.4 Storage Lifecycle Mechanics & Physical Storage Reclamation
+
+#### The PostgreSQL Storage Lifecycle:
+$$\text{New Simulation} \longrightarrow \text{7-Day Retention} \longrightarrow \text{Bounded DELETE} \longrightarrow \text{Dead Tuples} \longrightarrow \text{Autovacuum} \longrightarrow \text{Page Reuse / Disk Space}$$
+
+1. **Logical Deletion vs Physical Storage**:
+   Executing a SQL `DELETE` in PostgreSQL does not immediately release physical disk blocks back to the host operating system or cloud storage provider. Instead, PostgreSQL uses Multi-Version Concurrency Control (MVCC) where deleted rows are marked as **dead tuples**.
+2. **Autovacuum & Page Reuse**:
+   PostgreSQL's background `autovacuum` process periodically scans tables with dead tuples, marks those tuple locations on disk pages as free space, and makes that space immediately available for subsequent `INSERT` operations. Under a steady daily simulation volume, table file size stabilizes because daily inserts overwrite space reclaimed from daily deletions.
+3. **Physical Page Truncation (`VACUUM FULL`)**:
+   Physical file truncation (returning disk bytes to the OS or reducing Neon's allocated storage metric) only occurs if empty pages at the very end of the relation file can be truncated, or through explicit `VACUUM FULL` (which requires exclusive table locks and is neither necessary nor recommended in normal operations).
+4. **Distinction Between Logical Arithmetic & Provider Billing**:
+   Logical payload arithmetic ($V_{\text{daily}} \times R_{\text{days}} \times S_{\text{payload}}$) calculates the raw uncompressed JSONB and column data footprint. Physical storage reported by cloud providers (e.g. Neon, AWS EBS) additionally includes:
+   - PostgreSQL table heap page headers ($8\text{ KB}$ pages).
+   - TOAST table chunking and compression for payloads exceeding $2\text{ KB}$.
+   - Index overhead: B-tree indexes on `simulations` (`ix_simulations_queue`, `ix_simulations_user_id`, `pk_simulations`).
+   - Write-Ahead Log (WAL) generation during batch deletions.
+   - Provider allocation chunking (e.g. minimum page allocation units).
+   Therefore, logical payload estimates should not be interpreted as an exact 1-to-1 byte match for provider billing dashboards.
+
 ---
 
 ## 8. Mathematical Capacity Model
@@ -220,6 +240,22 @@ $$\text{Allowable Queue Depth } Q_{\text{max}} = D_{\text{max}} \times T_{\text{
   $$Q_{\text{max}}(30\text{s}) = 30 \times 25 = \mathbf{750\text{ pending jobs}}$$
 - For a **$60\text{ second}$** acceptable delay:
   $$Q_{\text{max}}(60\text{s}) = 60 \times 25 = \mathbf{1,500\text{ pending jobs}}$$
+
+### 8.4 Steady-State Storage Capacity Model
+
+Under automated recurring daily retention cleanup:
+
+$$S_{\text{steady-state}} = V_{\text{daily}} \times R_{\text{days}} \times \overline{S}_{\text{payload}} \times (1 + M_{\text{overhead}})$$
+
+Where:
+- $V_{\text{daily}}$ is daily completed and failed simulation count.
+- $R_{\text{days}}$ is retention period in days ($7$ days default).
+- $\overline{S}_{\text{payload}}$ is average uncompressed JSON result payload size ($\sim 192\text{ KB}$ for 1,000 interactions).
+- $M_{\text{overhead}}$ is relation and index overhead ($\approx 0.15 - 0.25$ for B-tree indexes, page alignment, and tuple headers).
+
+**Example for standard production workload ($100\text{ simulations/day}$ at $1\text{k}$ interactions)**:
+$$S_{\text{steady-state}} = 100 \times 7 \times 192\text{ KB} \times 1.20 \approx 161.3\text{ MB}$$
+This represents only **$32.3\%$** of the Neon $500\text{ MB}$ free tier limit, demonstrating sustainable equilibrium without external object storage.
 
 ---
 

@@ -148,6 +148,12 @@ class Settings(BaseSettings):
         if self.AUTH_SESSION_MAX_AGE_SECONDS <= 0:
             errors.append("AUTH_SESSION_MAX_AGE_SECONDS must be positive")
 
+        if self.SIMULATION_RETENTION_DAYS < 1:
+            errors.append("SIMULATION_RETENTION_DAYS must be at least 1")
+
+        if self.SIMULATION_CLEANUP_BATCH_SIZE < 1 or self.SIMULATION_CLEANUP_BATCH_SIZE > 1000:
+            errors.append("SIMULATION_CLEANUP_BATCH_SIZE must be between 1 and 1000")
+
         if errors:
             raise ValueError(f"Production configuration validation failed: {'; '.join(errors)}")
 

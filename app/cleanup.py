@@ -51,6 +51,16 @@ def main() -> None:
     retention_days = args.retention_days if args.retention_days is not None else settings.SIMULATION_RETENTION_DAYS
     batch_size = args.batch_size if args.batch_size is not None else settings.SIMULATION_CLEANUP_BATCH_SIZE
 
+    if retention_days < 1:
+        logger.error("Invalid retention_days: %d. Must be >= 1.", retention_days)
+        print(f"ERROR: --retention-days must be a positive integer (>= 1), got {retention_days}", file=sys.stderr)
+        sys.exit(2)
+
+    if batch_size < 1 or batch_size > 1000:
+        logger.error("Invalid batch_size: %d. Must be between 1 and 1000.", batch_size)
+        print(f"ERROR: --batch-size must be between 1 and 1000, got {batch_size}", file=sys.stderr)
+        sys.exit(2)
+
     print("=" * 65)
     print("      BehaviorSim Simulation Data Retention Cleanup")
     print("=" * 65)

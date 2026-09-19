@@ -13,11 +13,6 @@ authors = [
 ]
 license = { text = "MIT" }
 
-[project.urls]
-Homepage = "https://github.com/gtathelegend/BehaviourSim-API"
-Repository = "https://github.com/gtathelegend/BehaviourSim-API"
-Issues = "https://github.com/gtathelegend/BehaviourSim-API/issues"
-
 dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.28.0",
@@ -30,6 +25,11 @@ dependencies = [
     "psycopg[binary]>=3.1.0",
     "httpx>=0.27.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/gtathelegend/BehaviourSim-API"
+Repository = "https://github.com/gtathelegend/BehaviourSim-API"
+Issues = "https://github.com/gtathelegend/BehaviourSim-API/issues"
 
 [project.optional-dependencies]
 dev = [

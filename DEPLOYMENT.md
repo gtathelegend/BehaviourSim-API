@@ -9,11 +9,11 @@ This document is the authoritative operational guide for deploying the **Behavio
 The production deployment connects the frontend web application, the backend API service hosted on Render, and an external serverless PostgreSQL database hosted on Neon:
 
 ```text
-behaviorsim.vedaangsharma.in (Frontend Web Application)
+behavioursim.vedaangsharma.in (Frontend Web Application)
         │
         │ HTTPS (CORS restricted)
         ▼
-api.behaviorsim.vedaangsharma.in (FastAPI / Uvicorn on Render)
+api.behavioursim.vedaangsharma.in (FastAPI / Uvicorn on Render)
         │
         │ DATABASE_URL (SSL Required: sslmode=require)
         ▼
@@ -99,10 +99,10 @@ Configure the following variables in the Render Dashboard (**Environment** tab):
 | `APP_ENV` | Variable | `production` |
 | `APP_NAME` | Variable | `BehaviorSim API` |
 | `API_VERSION` | Variable | `0.1.0` |
-| `API_BASE_URL` | Variable | `https://api.behaviorsim.vedaangsharma.in` |
-| `WEB_BASE_URL` | Variable | `https://behaviorsim.vedaangsharma.in` |
-| `OAUTH_REDIRECT_BASE_URL` | Variable | `https://api.behaviorsim.vedaangsharma.in` |
-| `CORS_ORIGINS` | Variable | `https://behaviorsim.vedaangsharma.in` |
+| `API_BASE_URL` | Variable | `https://api.behavioursim.vedaangsharma.in` |
+| `WEB_BASE_URL` | Variable | `https://behavioursim.vedaangsharma.in` |
+| `OAUTH_REDIRECT_BASE_URL` | Variable | `https://api.behavioursim.vedaangsharma.in` |
+| `CORS_ORIGINS` | Variable | `https://behavioursim.vedaangsharma.in` |
 | `DATABASE_URL` | Secret | Real Neon PostgreSQL connection string (`...sslmode=require`) |
 | `DB_POOL_SIZE` | Variable | `10` |
 | `DB_MAX_OVERFLOW` | Variable | `20` |
@@ -147,10 +147,10 @@ python scripts/verify_db_connectivity.py
 
 ## 7. Custom Domain & DNS Setup
 
-To attach `api.behaviorsim.vedaangsharma.in`:
+To attach `api.behavioursim.vedaangsharma.in`:
 
 1. In Render Dashboard, go to **Settings** $\to$ **Custom Domains**.
-2. Add `api.behaviorsim.vedaangsharma.in`.
+2. Add `api.behavioursim.vedaangsharma.in`.
 3. Render provides a target hostname (e.g. `behaviorsim-api.onrender.com`).
 4. In your DNS manager (e.g. Cloudflare, Route53, Namecheap), create a CNAME record:
    ```text
@@ -162,7 +162,7 @@ To attach `api.behaviorsim.vedaangsharma.in`:
 5. Render automatically provisions and manages an SSL/TLS certificate via Let's Encrypt.
 6. Verify HTTPS resolution:
    ```bash
-   curl -I https://api.behaviorsim.vedaangsharma.in/health
+   curl -I https://api.behavioursim.vedaangsharma.in/health
    ```
 
 ---
@@ -173,15 +173,15 @@ Register the exact production callback endpoints in your provider developer cons
 
 ### Google Cloud Console (Credentials $\to$ OAuth 2.0 Client IDs)
 * **Authorized JavaScript origins**:
-  - `https://behaviorsim.vedaangsharma.in`
+  - `https://behavioursim.vedaangsharma.in`
 * **Authorized redirect URIs**:
-  - `https://api.behaviorsim.vedaangsharma.in/v1/auth/google/callback`
+  - `https://api.behavioursim.vedaangsharma.in/v1/auth/google/callback`
 
 ### GitHub Developer Settings (OAuth Apps)
 * **Homepage URL**:
-  - `https://behaviorsim.vedaangsharma.in`
+  - `https://behavioursim.vedaangsharma.in`
 * **Authorization callback URL**:
-  - `https://api.behaviorsim.vedaangsharma.in/v1/auth/github/callback`
+  - `https://api.behavioursim.vedaangsharma.in/v1/auth/github/callback`
 
 ---
 
@@ -232,8 +232,8 @@ The API exposes two distinct probe endpoints:
    - Verify `Uvicorn running on http://0.0.0.0:<PORT>`.
 7. **Verify Probes**:
    ```bash
-   curl -s https://api.behaviorsim.vedaangsharma.in/health
-   curl -s https://api.behaviorsim.vedaangsharma.in/ready
+   curl -s https://api.behavioursim.vedaangsharma.in/health
+   curl -s https://api.behavioursim.vedaangsharma.in/ready
    ```
 
 ---
@@ -243,7 +243,7 @@ The API exposes two distinct probe endpoints:
 Run the following smoke test sequence against the deployed production API:
 
 ```bash
-API="https://api.behaviorsim.vedaangsharma.in"
+API="https://api.behavioursim.vedaangsharma.in"
 
 # 1. Liveness & Readiness
 curl -f "$API/health"
@@ -258,7 +258,7 @@ curl -I "$API/health" | grep -E "x-content-type-options|x-frame-options|strict-t
 
 # 4. CORS Verification (Must allow frontend origin)
 curl -s -I -X OPTIONS "$API/v1/presets" \
-  -H "Origin: https://behaviorsim.vedaangsharma.in" \
+  -H "Origin: https://behavioursim.vedaangsharma.in" \
   -H "Access-Control-Request-Method: GET" | grep -i "access-control-allow-origin"
 ```
 
@@ -281,7 +281,7 @@ Render captures stdout and stderr in real-time. Application logs are formatted b
    - Fix: Verify Neon connection string in Render Dashboard.
 3. **CORS Rejection from Frontend**
    - Cause: Frontend URL in `CORS_ORIGINS` does not match the actual browser origin.
-   - Fix: Update `CORS_ORIGINS` to `https://behaviorsim.vedaangsharma.in`.
+   - Fix: Update `CORS_ORIGINS` to `https://behavioursim.vedaangsharma.in`.
 
 ---
 
@@ -331,11 +331,11 @@ Before releasing to end users, verify:
 - [ ] Render health check path is `/health`.
 - [ ] Neon connection string uses `sslmode=require`.
 - [ ] No default secrets or test credentials are used in Render Environment tab.
-- [ ] SSL/TLS certificate is active for `api.behaviorsim.vedaangsharma.in`.
+- [ ] SSL/TLS certificate is active for `api.behavioursim.vedaangsharma.in`.
 - [ ] Response headers include `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
 - [ ] Response headers include `X-Content-Type-Options: nosniff`.
 - [ ] Response headers include `X-Frame-Options: DENY`.
-- [ ] `CORS_ORIGINS` is strictly limited to `https://behaviorsim.vedaangsharma.in` (no wildcard `*`).
+- [ ] `CORS_ORIGINS` is strictly limited to `https://behavioursim.vedaangsharma.in` (no wildcard `*`).
 - [ ] Google & GitHub OAuth client secrets are configured as Render secrets (`sync: false`).
 - [ ] Database credentials are not committed to git.
 

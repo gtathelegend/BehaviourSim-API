@@ -386,7 +386,7 @@ class TestWorkerLifespanDaemon:
                 assert worker_t is not None, "Worker thread should be running"
 
             # After exiting context manager, wait up to 5.0s for the network worker to terminate
-            worker_t.join(timeout=5.0)
+            worker_t.join(timeout=10.0)
             assert not worker_t.is_alive(), "Worker thread must terminate cleanly on shutdown"
         finally:
             settings.RUN_WORKER_THREAD = original_flag

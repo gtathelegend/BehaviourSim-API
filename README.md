@@ -284,24 +284,25 @@ Requires authentication (cookie, session token, or API key) and enforces rate li
 
 ```json
 {
-  "plan": "free",
-  "period_start": "2026-09-01T00:00:00Z",
-  "period_end": "2026-10-01T00:00:00Z",
-  "limits": {
+  "plan": {
+    "name": "free",
     "monthly_requests": 100,
     "monthly_interactions": 10000,
-    "max_interactions_per_request": 1000,
-    "requests_per_minute": 5,
-    "max_concurrent_simulations": 1,
-    "max_api_keys": 1
+    "max_interactions_per_request": 500,
+    "requests_per_minute": 30,
+    "max_concurrent_simulations": 1
+  },
+  "period": {
+    "start": "2026-09-01T00:00:00Z",
+    "end": "2026-10-01T00:00:00Z"
   },
   "usage": {
     "requests": 12,
-    "interactions": 1200
+    "interactions": 600
   },
   "remaining": {
     "requests": 88,
-    "interactions": 8800
+    "interactions": 9400
   }
 }
 ```
@@ -545,8 +546,12 @@ All HTTP responses automatically include hardened security headers via `Security
 All unhandled exceptions (`HTTP 500`), Pydantic validation errors (`HTTP 422`), and domain errors return uniform, structured JSON payloads:
 ```json
 {
-  "detail": "Internal server error",
-  "request_id": "c71a3962-e6fd-4100-8fae-cbeffbe0da3e"
+  "error": {
+    "message": "Internal server error",
+    "status_code": 500,
+    "details": {},
+    "request_id": "c71a3962-e6fd-4100-8fae-cbeffbe0da3e"
+  }
 }
 ```
 Internal stack traces, database schema details, and secrets are strictly suppressed in client responses and logged server-side with correlation IDs.
@@ -627,7 +632,7 @@ The following capabilities are intentionally deferred for subsequent phases:
 ## 16. Production Deployment (Render + Neon)
 
 The application is prepared for production deployment with the following architecture:
-* **Web Service / API**: Hosted on **Render** (`api.behaviorsim.vedaangsharma.in`), running FastAPI / Uvicorn.
+* **Web Service / API**: Hosted on **Render** (`api.behavioursim.vedaangsharma.in`), running FastAPI / Uvicorn.
 * **Database**: Managed **Neon Serverless PostgreSQL** with mandatory TLS/SSL (`?sslmode=require`).
 
 Key operational resources:
@@ -663,7 +668,7 @@ To prevent unbounded database growth and maintain steady-state storage equilibri
 * **Concurrency Safety**: Leverages PostgreSQL `FOR UPDATE SKIP LOCKED` so multiple cleanup processes can run concurrently without collision or deadlock.
 * **Operator CLI**: Safe operator invocation via CLI:
   ```bash
-  poetry run python -m app.cleanup [--dry-run] [--retention-days 7] [--batch-size 100]
+  python -m app.cleanup [--dry-run] [--retention-days 7] [--batch-size 100]
   ```
 * **Observability**: Execution counts, duration, and deletion volumes are tracked in `OperationalMetrics` and exposed in `GET /v1/diagnostics`.
 
